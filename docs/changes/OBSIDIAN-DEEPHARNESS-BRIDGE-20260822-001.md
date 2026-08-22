@@ -25,6 +25,7 @@
 - `dsh://` 只在 Obsidian 页面内拦截，严格解析 session/anchor，并把 deep-link 动作送入本机 bridge。
 - 添加插件设置页、pending citation 私有持久化和可部署的 CommonJS `main.js` 构建。
 - 设置更新后深链接读取当前 DSH origin；Vault revision 冲突通过 bridge 明确返回 HTTP 409。
+- 修正 Node 24/Playwright 收尾时的重复 socket 清理：`server.close()` 已负责空闲连接，不再同时调用 `closeIdleConnections()`，避免 Windows libuv 重复关闭断言。
 
 ## 验证
 

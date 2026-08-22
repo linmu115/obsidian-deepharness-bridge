@@ -288,7 +288,6 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
       closed = true;
       await new Promise<void>((resolve, reject) => {
         server.close((error) => error ? reject(error) : resolve());
-        server.closeIdleConnections();
       });
     },
   };
