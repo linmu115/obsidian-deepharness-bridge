@@ -5,6 +5,13 @@
   "type": "module",
   "license": "MIT",
   "main": "main.js",
+  "files": [
+    "main.js",
+    "manifest.json",
+    "versions.json",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsdown",
     "typecheck": "tsc --noEmit",

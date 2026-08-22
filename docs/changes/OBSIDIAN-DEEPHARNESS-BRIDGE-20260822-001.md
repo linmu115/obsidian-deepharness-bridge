@@ -41,7 +41,7 @@ pnpm --dir ..\.. vitest run tests/knowledge-protocol-contract.test.ts
 ## 兼容与产物
 
 - 验证 Obsidian API：`1.13.x`，插件 `minAppVersion` 为 `1.13.0`。
-- 维护引擎 tgz SHA-256：`9f1370f98c7fde195bf347c124cacab37b7d1a4221f6bdb3417e93b0abd4bc49`。
+- 维护引擎 tgz 只包含 Obsidian 运行文件、README 和 LICENSE；源码、测试与变更日志保留在 Git，不进入部署包。最终 SHA-256 在本节下方记录。
 - `main.js` SHA-256：`48a7e93a72eaf7eff8046723e0ac2da7068835bbcb482bd69fd13fc1fb2b70f1`。
 - 临时 Vault 中的 `.obsidian/plugins/obsidian-deepharness-bridge/` 已验证包含 `main.js`、`manifest.json` 和 `versions.json`；插件无独立 `styles.css`，界面仅使用 Obsidian 原生设置控件。
 - 完整双向 journey 使用临时 Vault 通过；未安装到真实 Vault，未改写真实笔记。
