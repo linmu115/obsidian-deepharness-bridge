@@ -1,4 +1,4 @@
-export const DEFAULT_BRIDGE_PORT = 27_124;
+export const DEFAULT_BRIDGE_PORT = 18_473;
 export const DEFAULT_TOKEN_TTL_MS = 15 * 60 * 1_000;
 export const DEFAULT_MAX_BODY_BYTES = 128 * 1_024;
 

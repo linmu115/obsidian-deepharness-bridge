@@ -41,7 +41,6 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
       if (message.type === "pending-citation") this.pendingCitations.set(message.citationId, message);
     }
 
-    await this.startBridge();
     registerEditorSelectionMenu(this, (selection) => this.queueCitation(selection));
     registerReadingSelectionMenu(this, {
       markdownViewType: MarkdownView,
@@ -56,6 +55,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
     });
     this.addSettingTab(new DeepHarnessSettingTab(this.app, this));
     this.register(() => { void this.bridge?.close(); });
+    await this.startBridge();
   }
 
   async updateSettings(patch: Partial<DeepHarnessBridgeSettings>): Promise<void> {
@@ -114,9 +114,9 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
       });
       this.bridgeStatus = `已连接 ${this.bridge.origin}`;
     } catch (error) {
-      this.bridgeStatus = "启动失败";
-      new Notice(error instanceof Error ? error.message : String(error));
-      throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      this.bridgeStatus = `启动失败：${message}`;
+      new Notice(this.bridgeStatus);
     }
   }
 }

@@ -15,6 +15,7 @@ import {
   type SessionNoteDocument,
 } from "../protocol.ts";
 import {
+  DEFAULT_BRIDGE_PORT,
   DEFAULT_MAX_BODY_BYTES,
   DEFAULT_TOKEN_TTL_MS,
   normalizeLoopbackOrigin,
@@ -131,7 +132,7 @@ function canonical(value: unknown): string {
 
 export async function startBridgeServer(options: BridgeServerOptions = {}): Promise<RunningBridge> {
   const allowedOrigins = new Set((options.allowedDshOrigins ?? []).map(normalizeLoopbackOrigin));
-  const port = validateBridgePort(options.port ?? 27_124);
+  const port = validateBridgePort(options.port ?? DEFAULT_BRIDGE_PORT);
   const tokenTtlMs = options.tokenTtlMs ?? DEFAULT_TOKEN_TTL_MS;
   const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
   const now = options.now ?? Date.now;
