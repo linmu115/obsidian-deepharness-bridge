@@ -1,0 +1,9 @@
+{
+  "id": "obsidian-deepharness-bridge",
+  "name": "DeepHarness Bridge",
+  "version": "0.1.0",
+  "minAppVersion": "1.13.0",
+  "description": "Bidirectional citations between Obsidian notes and DSH Web conversations.",
+  "author": "linmu115",
+  "isDesktopOnly": true
+}
