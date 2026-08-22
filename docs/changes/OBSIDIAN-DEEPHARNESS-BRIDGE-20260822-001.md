@@ -8,6 +8,7 @@
 
 - 修改前：仓库不存在。
 - 修改后：`obsidian-deepharness-bridge@0.1.0`，Obsidian 最低版本 `1.13.0`，协议版本 `1`。
+- 功能提交：`0ce37ac`（Vault 数据层）、`e47f664`/`cc4a2e1`（Obsidian 交互与设置）、`5d0552e`（Windows 关闭清理）。
 
 ## 改动
 
@@ -37,6 +38,16 @@ pnpm check
 pnpm --dir ..\.. vitest run tests/knowledge-protocol-contract.test.ts
 ```
 
+## 兼容与产物
+
+- 验证 Obsidian API：`1.13.x`，插件 `minAppVersion` 为 `1.13.0`。
+- 维护引擎 tgz SHA-256：`9f1370f98c7fde195bf347c124cacab37b7d1a4221f6bdb3417e93b0abd4bc49`。
+- `main.js` SHA-256：`48a7e93a72eaf7eff8046723e0ac2da7068835bbcb482bd69fd13fc1fb2b70f1`。
+- 临时 Vault 中的 `.obsidian/plugins/obsidian-deepharness-bridge/` 已验证包含 `main.js`、`manifest.json` 和 `versions.json`；插件无独立 `styles.css`，界面仅使用 Obsidian 原生设置控件。
+- 完整双向 journey 使用临时 Vault 通过；未安装到真实 Vault，未改写真实笔记。
+
 ## 回退
 
 首个提交是仓库基线；后续通过 Git 标签和 DSH Maintenance generation 选择旧提交，不直接覆盖 Vault 或已发布插件。
+
+首版回退标签：`change/OBSIDIAN-DEEPHARNESS-BRIDGE-20260822-001`。
