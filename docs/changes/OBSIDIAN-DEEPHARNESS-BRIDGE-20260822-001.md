@@ -20,6 +20,11 @@
 - 添加伴生 Markdown 的 marker 解析、首次创建、贴纸更新/删除和 SHA-256 乐观并发控制。
 - marker 外的 frontmatter 与用户正文逐字保留；损坏 marker 返回 `CORRUPT_MARKER`，禁止猜测覆盖。
 - 在原笔记中生成可识别的 WikiLink、`dsh://` 逻辑链接、稳定 block ID 和可精确删除的反链块。
+- 添加编辑模式与阅读模式选段入口，缺少 Obsidian block ID 时通过官方 Editor/Vault API 补写稳定 ID。
+- 添加核心 `webviewer` 窄适配：优先复用相同 DSH origin 的分页，不可用时才创建新分页。
+- `dsh://` 只在 Obsidian 页面内拦截，严格解析 session/anchor，并把 deep-link 动作送入本机 bridge。
+- 添加插件设置页、pending citation 私有持久化和可部署的 CommonJS `main.js` 构建。
+- 设置更新后深链接读取当前 DSH origin；Vault revision 冲突通过 bridge 明确返回 HTTP 409。
 
 ## 验证
 
@@ -27,6 +32,7 @@
 pnpm typecheck
 pnpm test -- bridge-server
 pnpm test -- session-notes references
+pnpm check
 pnpm --dir ..\.. vitest run tests/knowledge-protocol-contract.test.ts
 ```
 

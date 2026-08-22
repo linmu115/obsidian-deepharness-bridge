@@ -176,4 +176,29 @@ describe("loopback bridge server", () => {
     openBridges.splice(openBridges.indexOf(bridge), 1);
     await expect(fetch(`${origin}/v1/health`)).rejects.toThrow();
   });
+
+  it("maps Vault revision conflicts to HTTP 409", async () => {
+    const bridge = await start({
+      onSaveSessionNote: async () => {
+        throw Object.assign(new Error("stale revision"), { code: "REVISION_CONFLICT" });
+      },
+    });
+    const token = await handshake(bridge);
+    const response = await request(bridge, "/v1/session-notes/session-demo", {
+      method: "PUT",
+      headers: authorized(token, { "content-type": "application/json" }),
+      body: JSON.stringify({
+        document: {
+          protocolVersion: 1,
+          type: "session-note",
+          sessionId: "session-demo",
+          revision: "sha256:old",
+          stickers: [],
+        },
+        expectedRevision: "sha256:old",
+      }),
+    });
+
+    expect(response.status).toBe(409);
+  });
 });

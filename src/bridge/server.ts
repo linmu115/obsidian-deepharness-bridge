@@ -90,6 +90,14 @@ function errorPayload(error: unknown): { error: string } {
   return { error: "Unknown bridge error" };
 }
 
+function applicationErrorStatus(error: unknown): number | null {
+  if (!error || typeof error !== "object" || !("code" in error)) return null;
+  const code = (error as { code?: unknown }).code;
+  if (code === "REVISION_CONFLICT" || code === "CORRUPT_MARKER") return 409;
+  if (code === "NOTE_NOT_FOUND") return 404;
+  return null;
+}
+
 async function readJsonBody(request: IncomingMessage, maxBodyBytes: number): Promise<unknown> {
   const contentType = request.headers["content-type"]?.split(";", 1)[0]?.trim().toLowerCase();
   if (contentType !== "application/json") throw new HttpError(400, "Content-Type must be application/json");
@@ -250,7 +258,7 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
         json(response, 400, { error: "Request did not match the bridge protocol", issues: error.issues }, request.headers.origin as string | undefined);
         return;
       }
-      const status = error instanceof HttpError ? error.status : 500;
+      const status = error instanceof HttpError ? error.status : applicationErrorStatus(error) ?? 500;
       const origin = typeof request.headers.origin === "string" && allowedOrigins.has(request.headers.origin)
         ? request.headers.origin
         : undefined;
