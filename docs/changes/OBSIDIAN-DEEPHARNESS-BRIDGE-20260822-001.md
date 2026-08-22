@@ -17,12 +17,16 @@
 - 添加固定绑定 `127.0.0.1` 的 HTTP bridge、精确 DSH Origin 白名单和 15 分钟短期 token。
 - 添加按客户端确认的 FIFO 动作队列；citation resolve 使用 `citationId` 幂等并拒绝冲突重试。
 - 限制 JSON 请求体为 128 KiB，并在插件释放时关闭监听端口与空闲连接。
+- 添加伴生 Markdown 的 marker 解析、首次创建、贴纸更新/删除和 SHA-256 乐观并发控制。
+- marker 外的 frontmatter 与用户正文逐字保留；损坏 marker 返回 `CORRUPT_MARKER`，禁止猜测覆盖。
+- 在原笔记中生成可识别的 WikiLink、`dsh://` 逻辑链接、稳定 block ID 和可精确删除的反链块。
 
 ## 验证
 
 ```powershell
 pnpm typecheck
 pnpm test -- bridge-server
+pnpm test -- session-notes references
 pnpm --dir ..\.. vitest run tests/knowledge-protocol-contract.test.ts
 ```
 
