@@ -14,11 +14,15 @@
 - 添加 Obsidian `manifest.json`、独立 pnpm workspace、锁文件与 TypeScript 配置。
 - 定义与 DSH 端一致的五类协议消息和运行时校验。
 - 明确 Vault 是知识层数据真源，DSH 原始会话保持只读。
+- 添加固定绑定 `127.0.0.1` 的 HTTP bridge、精确 DSH Origin 白名单和 15 分钟短期 token。
+- 添加按客户端确认的 FIFO 动作队列；citation resolve 使用 `citationId` 幂等并拒绝冲突重试。
+- 限制 JSON 请求体为 128 KiB，并在插件释放时关闭监听端口与空闲连接。
 
 ## 验证
 
 ```powershell
 pnpm typecheck
+pnpm test -- bridge-server
 pnpm --dir ..\.. vitest run tests/knowledge-protocol-contract.test.ts
 ```
 
