@@ -32,6 +32,24 @@ export const openNoteActionSchema = z.object({
   actionId: z.string().uuid(),
   notePath: z.string().min(1),
   blockId: z.string().optional(),
+  line: z.number().int().nonnegative().optional(),
+  column: z.number().int().nonnegative().optional(),
+});
+
+export const stickerBacklinkTargetSchema = z.object({
+  stickerId: z.string().uuid(),
+  sessionId: z.string().min(1),
+  anchorId: z.string().min(1),
+  quoteHash: z.string().min(1),
+});
+
+export const stickerBacklinkSchema = z.object({
+  notePath: z.string().min(1),
+  line: z.number().int().nonnegative(),
+  column: z.number().int().nonnegative().optional(),
+  blockId: z.string().min(1).optional(),
+  heading: z.string().min(1).optional(),
+  excerpt: z.string(),
 });
 
 export const pendingCitationSchema = z.object({
@@ -74,6 +92,8 @@ export const bridgeMessageSchema = z.discriminatedUnion("type", [
 export type StickerRecord = z.infer<typeof stickerSchema>;
 export type DeepLinkAction = z.infer<typeof deepLinkActionSchema>;
 export type OpenNoteAction = z.infer<typeof openNoteActionSchema>;
+export type StickerBacklinkTarget = z.infer<typeof stickerBacklinkTargetSchema>;
+export type StickerBacklink = z.infer<typeof stickerBacklinkSchema>;
 export type PendingCitation = z.infer<typeof pendingCitationSchema>;
 export type ResolvedCitation = z.infer<typeof resolvedCitationSchema>;
 export type SessionNoteDocument = z.infer<typeof sessionNoteDocumentSchema>;
@@ -82,4 +102,3 @@ export type BridgeMessage = z.infer<typeof bridgeMessageSchema>;
 export function parseBridgeMessage(value: unknown): BridgeMessage {
   return bridgeMessageSchema.parse(value);
 }
-
