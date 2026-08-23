@@ -148,6 +148,38 @@ describe("loopback bridge server", () => {
     expect((await send({ ...citation, quoteHash: "sha256:different" })).status).toBe(409);
   });
 
+  it("returns validated backlinks for a sticker identity", async () => {
+    const onListStickerBacklinks = vi.fn(async () => [{
+      notePath: "项目/架构.md",
+      line: 12,
+      column: 4,
+      blockId: "sticker-reference",
+      heading: "插件架构",
+      excerpt: "回到贴纸",
+    }]);
+    const bridge = await start({ onListStickerBacklinks });
+    const token = await handshake(bridge);
+    const query = new URLSearchParams({
+      stickerId: "9bb3a80e-230d-44d1-a37c-f7b79d2bf315",
+      sessionId: "session-demo",
+      anchorId: "user-node-42",
+      quoteHash: "sha256:30101ebf",
+    });
+
+    const response = await request(bridge, `/v1/sticker-backlinks?${query}`, {
+      headers: authorized(token),
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ backlinks: await onListStickerBacklinks.mock.results[0]?.value });
+    expect(onListStickerBacklinks).toHaveBeenCalledWith({
+      stickerId: "9bb3a80e-230d-44d1-a37c-f7b79d2bf315",
+      sessionId: "session-demo",
+      anchorId: "user-node-42",
+      quoteHash: "sha256:30101ebf",
+    });
+  });
+
   it("returns bounded parsing errors and releases the listening port", async () => {
     const bridge = await start({ maxBodyBytes: 64 });
     const malformed = await request(bridge, "/v1/handshake", {

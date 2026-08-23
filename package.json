@@ -1,6 +1,6 @@
 {
   "name": "obsidian-deepharness-bridge",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Obsidian companion bridge for DeepSeek Harness conversations",
   "type": "module",
   "license": "MIT",

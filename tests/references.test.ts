@@ -52,7 +52,7 @@ describe("DSH backlink blocks", () => {
     const output = vault.files.get(notePath) ?? "";
     expect(location).toMatchObject({ notePath, blockId: "dsh-ref-76213b70" });
     expect(output).toContain("[[DSH会话-session-demo#^user-node-42|DSH 用户提问]]");
-    expect(output).toContain("[打开 DSH 会话](dsh://open/session/session-demo?anchor=user-node-42&quoteHash=sha256%3A30101ebf)");
+    expect(output).toContain("[打开 DSH 会话](obsidian://deepharness?session=session-demo&anchor=user-node-42&quoteHash=sha256%3A30101ebf)");
     expect(output).toContain("引用内容：Generation 保存某个时刻完整、可部署的插件组合。");
     expect(output).toContain("^dsh-ref-76213b70");
   });

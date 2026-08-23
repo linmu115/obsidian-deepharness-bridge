@@ -1,8 +1,9 @@
 import { normalizePath, TFile, TFolder, type App } from "obsidian";
 
 import type { VaultTextAdapter } from "./session-notes.ts";
+import type { VaultMarkdownAdapter, VaultMarkdownDocument } from "./sticker-backlinks.ts";
 
-export class ObsidianVaultAdapter implements VaultTextAdapter {
+export class ObsidianVaultAdapter implements VaultTextAdapter, VaultMarkdownAdapter {
   constructor(
     private readonly app: App,
     private readonly companionDirectory: string,
@@ -43,5 +44,13 @@ export class ObsidianVaultAdapter implements VaultTextAdapter {
     if (existing) throw new Error(`Vault path is not a Markdown file: ${resolved}`);
     await this.ensureParentFolders(resolved);
     await this.app.vault.create(resolved, content);
+  }
+
+  async listMarkdownFiles(): Promise<readonly VaultMarkdownDocument[]> {
+    const documents: VaultMarkdownDocument[] = [];
+    for (const file of this.app.vault.getMarkdownFiles()) {
+      documents.push({ path: file.path, content: await this.app.vault.cachedRead(file) });
+    }
+    return documents;
   }
 }

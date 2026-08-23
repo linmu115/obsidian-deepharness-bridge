@@ -10,9 +10,13 @@ import {
   PROTOCOL_VERSION,
   resolvedCitationSchema,
   sessionNoteDocumentSchema,
+  stickerBacklinkSchema,
+  stickerBacklinkTargetSchema,
   type OpenNoteAction,
   type ResolvedCitation,
   type SessionNoteDocument,
+  type StickerBacklink,
+  type StickerBacklinkTarget,
 } from "../protocol.ts";
 import {
   DEFAULT_BRIDGE_PORT,
@@ -49,6 +53,7 @@ export interface BridgeServerOptions {
   onOpenNote?: (action: OpenNoteAction) => Promise<void>;
   onReadSessionNote?: (sessionId: string) => Promise<SessionNoteDocument | null>;
   onSaveSessionNote?: (request: SaveSessionNoteRequest) => Promise<{ revision: string }>;
+  onListStickerBacklinks?: (target: StickerBacklinkTarget) => Promise<StickerBacklink[]>;
 }
 
 export interface RunningBridge {
@@ -226,6 +231,15 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
         const action = openNoteActionSchema.parse(await readJsonBody(request, maxBodyBytes));
         await options.onOpenNote?.(action);
         json(response, 200, { opened: true }, allowedOrigin);
+        return;
+      }
+
+      if (request.method === "GET" && requestUrl.pathname === "/v1/sticker-backlinks") {
+        const target = stickerBacklinkTargetSchema.parse(Object.fromEntries(requestUrl.searchParams));
+        const backlinks = z.array(stickerBacklinkSchema).parse(
+          await (options.onListStickerBacklinks?.(target) ?? Promise.resolve([])),
+        );
+        json(response, 200, { backlinks }, allowedOrigin);
         return;
       }
 

@@ -1,4 +1,5 @@
 import type { PendingCitation, ResolvedCitation } from "../protocol.ts";
+import { buildObsidianDshLink } from "../logical-link.ts";
 import { contentRevision, VaultDocumentError, type VaultTextAdapter } from "./session-notes.ts";
 
 export interface ReferenceLocation {
@@ -58,7 +59,11 @@ function renderReference(pending: PendingCitation, resolved: ResolvedCitation, b
     blockId,
   };
   const sessionTitle = `DSH会话-${safeWikiText(resolved.sessionId)}`;
-  const logicalLink = `dsh://open/session/${encodeURIComponent(resolved.sessionId)}?anchor=${encodeURIComponent(resolved.anchorId)}&quoteHash=${encodeURIComponent(resolved.quoteHash)}`;
+  const logicalLink = buildObsidianDshLink({
+    sessionId: resolved.sessionId,
+    anchorId: resolved.anchorId,
+    quoteHash: resolved.quoteHash,
+  });
   const quoteLines = pending.text.split("\n");
   return [
     `<!-- dsh-reference:${JSON.stringify(metadata)} -->`,

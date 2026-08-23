@@ -1,6 +1,7 @@
 import { MarkdownView, Menu, Notice, Plugin } from "obsidian";
 
 import { startBridgeServer, type RunningBridge } from "./bridge/server.ts";
+import { OBSIDIAN_DEEPHARNESS_ACTION, obsidianProtocolUrl } from "./logical-link.ts";
 import { parseBridgeMessage, type PendingCitation } from "./protocol.ts";
 import { registerEditorSelectionMenu, type NoteSelection } from "./selection/editor-menu.ts";
 import { registerReadingSelectionMenu } from "./selection/reading-menu.ts";
@@ -14,8 +15,9 @@ import { DeepHarnessSettingTab, type BridgeSettingsOwner } from "./ui/settings-t
 import { ObsidianVaultAdapter } from "./vault/obsidian-adapter.ts";
 import { insertResolvedCitation } from "./vault/references.ts";
 import { readSessionNote, saveSessionNote } from "./vault/session-notes.ts";
+import { listStickerBacklinks } from "./vault/sticker-backlinks.ts";
 import { ensureDshWebViewer } from "./webviewer/adapter.ts";
-import { registerDshLinkInterceptor } from "./webviewer/deep-link.ts";
+import { handleDshUrl, registerDshLinkInterceptor } from "./webviewer/deep-link.ts";
 
 interface StoredPluginData {
   settings?: Partial<DeepHarnessBridgeSettings>;
@@ -52,6 +54,20 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
       dshUrl: () => this.settings.dshOrigin,
       enqueue: (action) => this.bridge?.enqueue(action),
       onError: (error) => new Notice(error instanceof Error ? error.message : String(error)),
+    });
+    this.registerObsidianProtocolHandler(OBSIDIAN_DEEPHARNESS_ACTION, (params) => {
+      let value: string;
+      try {
+        value = obsidianProtocolUrl(params);
+      } catch (error) {
+        new Notice(error instanceof Error ? error.message : String(error));
+        return;
+      }
+      void handleDshUrl(value, {
+        app: this.app,
+        dshUrl: () => this.settings.dshOrigin,
+        enqueue: (action) => this.bridge?.enqueue(action),
+      }).catch((error: unknown) => new Notice(error instanceof Error ? error.message : String(error)));
     });
     this.addSettingTab(new DeepHarnessSettingTab(this.app, this));
     this.register(() => { void this.bridge?.close(); });
@@ -108,7 +124,14 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
         onOpenNote: async (action) => {
           const subpath = action.blockId ? `#^${action.blockId}` : "";
           await this.app.workspace.openLinkText(`${action.notePath}${subpath}`, "", false);
+          if (!action.blockId && action.line !== undefined) {
+            const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+            if (view?.file?.path === action.notePath) {
+              view.editor.setCursor({ line: action.line, ch: action.column ?? 0 });
+            }
+          }
         },
+        onListStickerBacklinks: (target) => listStickerBacklinks(vault, target),
         onReadSessionNote: (sessionId) => readSessionNote(vault, sessionId),
         onSaveSessionNote: ({ document, expectedRevision }) => saveSessionNote(vault, document, expectedRevision),
       });

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { ensureDshWebViewer } from "../src/webviewer/adapter.ts";
 import { handleDshUrl } from "../src/webviewer/deep-link.ts";
+import { buildObsidianDshLink, obsidianProtocolUrl } from "../src/logical-link.ts";
 
 function fakeLeaf(url: string) {
   return {
@@ -25,6 +26,33 @@ function appWith(leaves: ReturnType<typeof fakeLeaf>[] = []) {
 }
 
 describe("Obsidian DSH Web Viewer adapter", () => {
+  it("builds the official Obsidian protocol URL from handler data", () => {
+    const expected = "obsidian://deepharness?session=session-demo&anchor=user-node-42&quoteHash=sha256%3A30101ebf&sticker=9bb3a80e-230d-44d1-a37c-f7b79d2bf315";
+    expect(buildObsidianDshLink({
+      sessionId: "session-demo",
+      anchorId: "user-node-42",
+      quoteHash: "sha256:30101ebf",
+      stickerId: "9bb3a80e-230d-44d1-a37c-f7b79d2bf315",
+    })).toBe(expected);
+    expect(obsidianProtocolUrl({
+      action: "deepharness",
+      session: "session-demo",
+      anchor: "user-node-42",
+      quoteHash: "sha256:30101ebf",
+      sticker: "9bb3a80e-230d-44d1-a37c-f7b79d2bf315",
+    })).toBe(expected);
+  });
+
+  it("keeps sticker identity out of the DSH deep-link action payload", async () => {
+    const { app } = appWith([fakeLeaf("http://127.0.0.1:51882/")]);
+    const action = await handleDshUrl(
+      "obsidian://deepharness?session=session-demo&anchor=user-node-42&quoteHash=sha256%3A30101ebf&sticker=9bb3a80e-230d-44d1-a37c-f7b79d2bf315",
+      { app, dshUrl: "http://127.0.0.1:51882/", enqueue: vi.fn() },
+    );
+
+    expect(action).not.toHaveProperty("stickerId");
+  });
+
   it("reuses an existing loopback DSH webviewer leaf", async () => {
     const existing = fakeLeaf("http://127.0.0.1:51882/");
     const { app } = appWith([existing]);
@@ -54,7 +82,7 @@ describe("Obsidian DSH Web Viewer adapter", () => {
     const enqueue = vi.fn((action) => { calls.push("enqueue"); return action.actionId; });
 
     const action = await handleDshUrl(
-      "dsh://open/session/session-demo?anchor=user-node-42&quoteHash=sha256%3A30101ebf",
+      "obsidian://deepharness?session=session-demo&anchor=user-node-42&quoteHash=sha256%3A30101ebf",
       {
         app,
         dshUrl: "http://127.0.0.1:51882/",
@@ -97,5 +125,16 @@ describe("Obsidian DSH Web Viewer adapter", () => {
 
     expect(app.workspace.revealLeaf).toHaveBeenCalledWith(current);
     expect(app.workspace.getLeaf).not.toHaveBeenCalled();
+  });
+
+  it("keeps legacy dsh links readable", async () => {
+    const { app } = appWith([fakeLeaf("http://127.0.0.1:51882/")]);
+    const action = await handleDshUrl("dsh://open/session/session-demo?anchor=user-node-42", {
+      app,
+      dshUrl: "http://127.0.0.1:51882/",
+      enqueue: vi.fn(),
+      createActionId: () => "6f09f1be-5dc1-48e4-ac08-e3c05d70ac01",
+    });
+    expect(action).toMatchObject({ sessionId: "session-demo", anchorId: "user-node-42" });
   });
 });

@@ -1,4 +1,5 @@
-import { PROTOCOL_VERSION, type DeepLinkAction } from "../protocol.ts";
+import type { DeepLinkAction } from "../protocol.ts";
+import { parseDshLogicalLink } from "../logical-link.ts";
 import { ensureDshWebViewer, type WebViewerApp } from "./adapter.ts";
 
 export interface DeepLinkHandlerOptions {
@@ -10,23 +11,7 @@ export interface DeepLinkHandlerOptions {
 }
 
 export function parseDshUrl(value: string, createActionId: () => string = () => crypto.randomUUID()): DeepLinkAction {
-  const url = new URL(value);
-  if (url.protocol !== "dsh:" || url.hostname !== "open") throw new Error("Unsupported DSH logical link");
-  const segments = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
-  if (segments.length !== 2 || segments[0] !== "session" || !segments[1]) throw new Error("DSH link must identify a session");
-  const unknownParameters = [...url.searchParams.keys()].filter((key) => key !== "anchor" && key !== "quoteHash");
-  if (unknownParameters.length) throw new Error(`Unknown DSH link parameter: ${unknownParameters[0]}`);
-  const anchorId = url.searchParams.get("anchor");
-  if (!anchorId) throw new Error("DSH link is missing an anchor");
-  const quoteHash = url.searchParams.get("quoteHash");
-  return {
-    protocolVersion: PROTOCOL_VERSION,
-    type: "deep-link",
-    actionId: createActionId(),
-    sessionId: segments[1],
-    anchorId,
-    ...(quoteHash ? { quoteHash } : {}),
-  };
+  return parseDshLogicalLink(value, createActionId);
 }
 
 export async function handleDshUrl(value: string, options: DeepLinkHandlerOptions): Promise<DeepLinkAction> {
