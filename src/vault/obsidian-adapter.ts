@@ -1,9 +1,16 @@
-import { normalizePath, TFile, TFolder, type App } from "obsidian";
+import {
+  normalizePath,
+  parseLinktext,
+  TFile,
+  TFolder,
+  type App,
+} from "obsidian";
 
+import { collectNativeBacklinks } from "./native-backlink-index.ts";
 import type { VaultTextAdapter } from "./session-notes.ts";
-import type { VaultMarkdownAdapter, VaultMarkdownDocument } from "./sticker-backlinks.ts";
+import type { VaultBacklinkAdapter } from "./sticker-backlinks.ts";
 
-export class ObsidianVaultAdapter implements VaultTextAdapter, VaultMarkdownAdapter {
+export class ObsidianVaultAdapter implements VaultTextAdapter, VaultBacklinkAdapter {
   constructor(
     private readonly app: App,
     private readonly companionDirectory: string,
@@ -46,11 +53,20 @@ export class ObsidianVaultAdapter implements VaultTextAdapter, VaultMarkdownAdap
     await this.app.vault.create(resolved, content);
   }
 
-  async listMarkdownFiles(): Promise<readonly VaultMarkdownDocument[]> {
-    const documents: VaultMarkdownDocument[] = [];
-    for (const file of this.app.vault.getMarkdownFiles()) {
-      documents.push({ path: file.path, content: await this.app.vault.cachedRead(file) });
-    }
-    return documents;
+  async listNativeBacklinks(notePath: string, blockId: string) {
+    const targetPath = this.resolvePath(notePath);
+    return collectNativeBacklinks({
+      resolvedLinks: this.app.metadataCache.resolvedLinks,
+      getSource: (path) => {
+        const file = this.app.vault.getAbstractFileByPath(path);
+        return file instanceof TFile ? { path: file.path, value: file } : null;
+      },
+      getCache: (source) => this.app.metadataCache.getFileCache(source.value as TFile),
+      parseLinktext,
+      resolveDestinationPath: (linkPath, sourcePath) => (
+        this.app.metadataCache.getFirstLinkpathDest(linkPath, sourcePath)?.path ?? null
+      ),
+      readSource: (source) => this.app.vault.cachedRead(source.value as TFile),
+    }, targetPath, blockId);
   }
 }

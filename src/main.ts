@@ -127,7 +127,9 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
           if (!action.blockId && action.line !== undefined) {
             const view = this.app.workspace.getActiveViewOfType(MarkdownView);
             if (view?.file?.path === action.notePath) {
-              view.editor.setCursor({ line: action.line, ch: action.column ?? 0 });
+              const position = { line: action.line, ch: action.column ?? 0 };
+              view.editor.setCursor(position);
+              view.editor.scrollIntoView({ from: position, to: position }, true);
             }
           }
         },
