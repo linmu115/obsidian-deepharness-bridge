@@ -18,6 +18,8 @@ import { readSessionNote, saveSessionNote } from "./vault/session-notes.ts";
 import { listStickerBacklinks } from "./vault/sticker-backlinks.ts";
 import { ensureDshWebViewer } from "./webviewer/adapter.ts";
 import { handleDshUrl, registerDshLinkInterceptor } from "./webviewer/deep-link.ts";
+import { ObsidianMainMarkdownWorkspace } from "./workspace/obsidian-adapter.ts";
+import { openNoteInMainMarkdownLeaf } from "./workspace/open-note.ts";
 
 interface StoredPluginData {
   settings?: Partial<DeepHarnessBridgeSettings>;
@@ -122,16 +124,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
           return location;
         },
         onOpenNote: async (action) => {
-          const subpath = action.blockId ? `#^${action.blockId}` : "";
-          await this.app.workspace.openLinkText(`${action.notePath}${subpath}`, "", false);
-          if (!action.blockId && action.line !== undefined) {
-            const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-            if (view?.file?.path === action.notePath) {
-              const position = { line: action.line, ch: action.column ?? 0 };
-              view.editor.setCursor(position);
-              view.editor.scrollIntoView({ from: position, to: position }, true);
-            }
-          }
+          await openNoteInMainMarkdownLeaf(new ObsidianMainMarkdownWorkspace(this.app), action);
         },
         onListStickerBacklinks: (target) => listStickerBacklinks(vault, target),
         onReadSessionNote: (sessionId) => readSessionNote(vault, sessionId),
