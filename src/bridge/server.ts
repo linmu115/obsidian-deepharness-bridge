@@ -5,15 +5,27 @@ import type { AddressInfo } from "node:net";
 import { z } from "zod";
 
 import {
+  ANNOTATION_PROTOCOL_VERSION,
+  BacklinkCommitV2Schema,
+  ObsidianReferenceCaptureV2Schema,
+  ReferenceClaimV2Schema,
+  ReferenceDiscardV2Schema,
+  ReferenceRefreshRequestV2Schema,
+  ReferenceRefreshResultV2Schema,
+  STICKER_PROTOCOL_VERSION,
   openNoteActionSchema,
   parseBridgeMessage,
   PROTOCOL_VERSION,
-  resolvedCitationSchema,
   sessionNoteDocumentSchema,
   stickerBacklinkSchema,
   stickerBacklinkTargetSchema,
   type OpenNoteAction,
-  type ResolvedCitation,
+  type BacklinkCommitV2,
+  type BacklinkReceiptV2,
+  type ReferenceClaimV2,
+  type ReferenceDiscardV2,
+  type ReferenceRefreshRequestV2,
+  type ReferenceRefreshResultV2,
   type SessionNoteDocument,
   type StickerBacklink,
   type StickerBacklinkTarget,
@@ -33,11 +45,6 @@ interface TokenRecord {
   expiresAt: number;
 }
 
-export interface CitationResolutionLocation {
-  notePath: string;
-  blockId: string;
-}
-
 export interface SaveSessionNoteRequest {
   document: SessionNoteDocument;
   expectedRevision: string;
@@ -49,11 +56,14 @@ export interface BridgeServerOptions {
   tokenTtlMs?: number;
   maxBodyBytes?: number;
   now?: () => number;
-  onResolveCitation?: (citation: ResolvedCitation) => Promise<CitationResolutionLocation>;
   onOpenNote?: (action: OpenNoteAction) => Promise<void>;
   onReadSessionNote?: (sessionId: string) => Promise<SessionNoteDocument | null>;
   onSaveSessionNote?: (request: SaveSessionNoteRequest) => Promise<{ revision: string }>;
   onListStickerBacklinks?: (target: StickerBacklinkTarget) => Promise<StickerBacklink[]>;
+  onClaimReference?: (claim: ReferenceClaimV2) => Promise<void>;
+  onRefreshReference?: (request: ReferenceRefreshRequestV2) => Promise<ReferenceRefreshResultV2>;
+  onDiscardReference?: (request: ReferenceDiscardV2) => Promise<void>;
+  onCommitBacklink?: (commit: BacklinkCommitV2) => Promise<BacklinkReceiptV2>;
 }
 
 export interface RunningBridge {
@@ -99,7 +109,7 @@ function errorPayload(error: unknown): { error: string } {
 function applicationErrorStatus(error: unknown): number | null {
   if (!error || typeof error !== "object" || !("code" in error)) return null;
   const code = (error as { code?: unknown }).code;
-  if (code === "REVISION_CONFLICT" || code === "CORRUPT_MARKER") return 409;
+  if (code === "REVISION_CONFLICT" || code === "CORRUPT_MARKER" || code === "IDEMPOTENCY_CONFLICT" || code === "SOURCE_CHANGED") return 409;
   if (code === "NOTE_NOT_FOUND") return 404;
   return null;
 }
@@ -146,7 +156,7 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
 
   const queue = new ClientActionQueue();
   const tokens = new Map<string, TokenRecord>();
-  const resolvedCitations = new Map<string, { request: string; result: CitationResolutionLocation }>();
+  const referenceClaims = new Map<string, ReferenceClaimV2>();
   const inMemoryNotes = new Map<string, SessionNoteDocument>();
   let latestTokenExpiry: number | null = null;
   let closed = false;
@@ -175,7 +185,17 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
         return;
       }
 
-      if (request.method === "POST" && requestUrl.pathname === "/v1/handshake") {
+      if (request.method === "GET" && requestUrl.pathname === "/v2/health") {
+        json(response, 200, {
+          annotationProtocolVersion: ANNOTATION_PROTOCOL_VERSION,
+          stickerProtocolVersion: STICKER_PROTOCOL_VERSION,
+          status: "ok",
+          capabilities: ["reference-capture-v2", "reference-refresh", "backlink-commit-v2"],
+        }, allowedOrigin);
+        return;
+      }
+
+      if (request.method === "POST" && (requestUrl.pathname === "/v1/handshake" || requestUrl.pathname === "/v2/handshake")) {
         const input = handshakeSchema.parse(await readJsonBody(request, maxBodyBytes));
         for (const [token, record] of tokens) {
           if (record.clientId === input.clientId) tokens.delete(token);
@@ -184,7 +204,15 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
         const expiresAt = now() + tokenTtlMs;
         tokens.set(token, { clientId: input.clientId, origin: allowedOrigin, expiresAt });
         latestTokenExpiry = expiresAt;
-        json(response, 200, { protocolVersion: PROTOCOL_VERSION, clientId: input.clientId, token, expiresAt }, allowedOrigin);
+        const v2 = requestUrl.pathname.startsWith("/v2/");
+        json(response, 200, v2 ? {
+          annotationProtocolVersion: ANNOTATION_PROTOCOL_VERSION,
+          stickerProtocolVersion: STICKER_PROTOCOL_VERSION,
+          capabilities: ["reference-capture-v2", "reference-refresh", "backlink-commit-v2"],
+          clientId: input.clientId,
+          token,
+          expiresAt,
+        } : { protocolVersion: PROTOCOL_VERSION, clientId: input.clientId, token, expiresAt }, allowedOrigin);
         return;
       }
 
@@ -199,7 +227,76 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
         const afterText = requestUrl.searchParams.get("after") ?? "0";
         const after = Number(afterText);
         if (!Number.isInteger(after) || after < 0) throw new HttpError(400, "Action cursor must be a non-negative integer");
+        json(response, 200, queue.pending(authentication.clientId, after, (message) => message.type === "deep-link"), allowedOrigin);
+        return;
+      }
+
+
+      if (request.method === "GET" && requestUrl.pathname === "/v2/actions/pending") {
+        const afterText = requestUrl.searchParams.get("after") ?? "0";
+        const after = Number(afterText);
+        if (!Number.isInteger(after) || after < 0) throw new HttpError(400, "Action cursor must be a non-negative integer");
         json(response, 200, queue.pending(authentication.clientId, after), allowedOrigin);
+        return;
+      }
+
+      const v2AckMatch = /^\/v2\/actions\/([^/]+)\/ack$/.exec(requestUrl.pathname);
+      if (request.method === "POST" && v2AckMatch) {
+        const actionId = decodeURIComponent(v2AckMatch[1] ?? "");
+        const claim = ReferenceClaimV2Schema.parse(await readJsonBody(request, maxBodyBytes));
+        const message = queue.message(actionId);
+        if (message === undefined) throw new HttpError(404, "Action was not found");
+        if (message.type !== "reference-capture" || message.referenceId !== claim.referenceId) {
+          throw new HttpError(409, "Reference claim does not match the queued action");
+        }
+        const existing = referenceClaims.get(claim.referenceId);
+        if (existing !== undefined) {
+          if (canonical(existing) !== canonical(claim)) throw new HttpError(409, "Reference was already claimed by a different target");
+        } else {
+          await options.onClaimReference?.(claim);
+          referenceClaims.set(claim.referenceId, claim);
+        }
+        const result = queue.claim(actionId, claim);
+        if (result === "missing") throw new HttpError(404, "Action was not found");
+        if (result === "conflict") throw new HttpError(409, "Reference action was already claimed differently");
+        json(response, 200, { acknowledged: true, actionId, referenceId: claim.referenceId }, allowedOrigin);
+        return;
+      }
+
+      const refreshMatch = /^\/v2\/references\/([^/]+)\/refresh$/.exec(requestUrl.pathname);
+      if (request.method === "POST" && refreshMatch) {
+        const referenceId = decodeURIComponent(refreshMatch[1] ?? "");
+        const input = ReferenceRefreshRequestV2Schema.parse(await readJsonBody(request, maxBodyBytes));
+        if (input.referenceId !== referenceId) throw new HttpError(400, "Reference ID does not match request path");
+        const result = ReferenceRefreshResultV2Schema.parse(
+          await (options.onRefreshReference?.(input) ?? Promise.resolve({ kind: "offline" as const })),
+        );
+        json(response, 200, result, allowedOrigin);
+        return;
+      }
+
+      const discardMatch = /^\/v2\/references\/([^/]+)\/discard$/.exec(requestUrl.pathname);
+      if (request.method === "POST" && discardMatch) {
+        const referenceId = decodeURIComponent(discardMatch[1] ?? "");
+        const input = ReferenceDiscardV2Schema.parse(await readJsonBody(request, maxBodyBytes));
+        if (input.referenceId !== referenceId) throw new HttpError(400, "Reference ID does not match request path");
+        await options.onDiscardReference?.(input);
+        json(response, 200, { discarded: true, referenceId }, allowedOrigin);
+        return;
+      }
+
+      if (request.method === "POST" && requestUrl.pathname === "/v2/backlinks/commit") {
+        const input = BacklinkCommitV2Schema.parse(await readJsonBody(request, maxBodyBytes));
+        const result = await options.onCommitBacklink?.(input);
+        if (result === undefined) throw new HttpError(501, "Backlink commit is unavailable");
+        json(response, 200, result, allowedOrigin);
+        return;
+      }
+
+      if (request.method === "POST" && requestUrl.pathname === "/v2/obsidian/open-note") {
+        const action = openNoteActionSchema.parse(await readJsonBody(request, maxBodyBytes));
+        await options.onOpenNote?.(action);
+        json(response, 200, { opened: true }, allowedOrigin);
         return;
       }
 
@@ -209,21 +306,6 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
         const actionId = decodeURIComponent(ackMatch[1] ?? "");
         if (!queue.acknowledge(authentication.clientId, actionId)) throw new HttpError(404, "Action was not found");
         json(response, 200, { acknowledged: true, actionId }, allowedOrigin);
-        return;
-      }
-
-      if (request.method === "POST" && requestUrl.pathname === "/v1/citations/resolve") {
-        const citation = resolvedCitationSchema.parse(await readJsonBody(request, maxBodyBytes));
-        const requestKey = canonical(citation);
-        const existing = resolvedCitations.get(citation.citationId);
-        if (existing) {
-          if (existing.request !== requestKey) throw new HttpError(409, "Citation ID was already resolved with different content");
-          json(response, 200, existing.result, allowedOrigin);
-          return;
-        }
-        const result = await (options.onResolveCitation?.(citation) ?? Promise.resolve({ notePath: "", blockId: "" }));
-        resolvedCitations.set(citation.citationId, { request: requestKey, result });
-        json(response, 200, result, allowedOrigin);
         return;
       }
 
@@ -296,7 +378,10 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
       return latestTokenExpiry;
     },
     enqueue(message) {
-      return queue.enqueue(parseBridgeMessage(message) as QueuedBridgeMessage);
+      if (message.type === "reference-capture") return queue.enqueue(ObsidianReferenceCaptureV2Schema.parse(message));
+      const legacy = parseBridgeMessage(message);
+      if (legacy.type !== "deep-link") throw new TypeError("Only deep links and v2 reference captures are queueable");
+      return queue.enqueue(legacy as QueuedBridgeMessage);
     },
     async close() {
       if (closed) return;

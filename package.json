@@ -1,6 +1,6 @@
 {
   "name": "obsidian-deepharness-bridge",
-  "version": "0.1.4",
+  "version": "0.2.0",
   "description": "Obsidian companion bridge for DeepSeek Harness conversations",
   "type": "module",
   "license": "MIT",
@@ -23,6 +23,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.3.0",
+    "dsh-annotation-core": "file:D:/AI/DSH-Plugin-Repositories/dsh-annotation-core/dsh-annotation-core-0.1.0.tgz",
     "obsidian": "^1.13.1",
     "tsdown": "^0.22.14",
     "typescript": "^5.9.3",

@@ -53,6 +53,13 @@ export class ObsidianVaultAdapter implements VaultTextAdapter, VaultBacklinkAdap
     await this.app.vault.create(resolved, content);
   }
 
+  async process(path: string, update: (content: string) => string): Promise<string> {
+    const resolved = this.resolvePath(path);
+    const file = this.app.vault.getAbstractFileByPath(resolved);
+    if (!(file instanceof TFile)) throw new Error(`Vault Markdown note was not found: ${resolved}`);
+    return this.app.vault.process(file, update);
+  }
+
   async listNativeBacklinks(notePath: string, blockId: string) {
     const targetPath = this.resolvePath(notePath);
     return collectNativeBacklinks({

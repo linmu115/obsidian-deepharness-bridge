@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import type { PendingCitation, ResolvedCitation } from "../src/protocol.ts";
+import type { BacklinkCommitV2 } from "../src/protocol.ts";
 import {
+  commitReferenceBacklink,
   insertResolvedCitation,
   removeResolvedCitation,
 } from "../src/vault/references.ts";
+import { createObsidianReferenceCapture } from "../src/vault/reference-source.ts";
 import { contentRevision, type VaultTextAdapter } from "../src/vault/session-notes.ts";
 
 class MemoryVault implements VaultTextAdapter {
@@ -18,6 +21,15 @@ class MemoryVault implements VaultTextAdapter {
   async write(path: string, content: string): Promise<void> {
     this.files.set(path, content);
     this.writes += 1;
+  }
+
+  async process(path: string, update: (content: string) => string): Promise<string> {
+    const output = update(this.files.get(path) ?? "");
+    if (output !== this.files.get(path)) {
+      this.files.set(path, output);
+      this.writes += 1;
+    }
+    return output;
   }
 }
 
@@ -81,5 +93,63 @@ describe("DSH backlink blocks", () => {
     expect(removed.removed).toBe(true);
     expect(output).toContain("用户尾注");
     expect(output).not.toContain("dsh-ref-76213b70");
+  });
+
+  it("commits protocol-v2 backlinks atomically and recovers a missing receipt from the marker", async () => {
+    const vault = new MemoryVault();
+    vault.files.set(notePath, original);
+    const capture = createObsidianReferenceCapture({
+      actionId: "action-1",
+      referenceId: pending.citationId,
+      vaultId: "vault-1",
+      notePath,
+      heading: "Generation",
+      blockId: "generation-definition",
+      occurrence: 0,
+      selectedText: pending.text,
+      markdown: original,
+      capturedAt: 100,
+    });
+    const commit: BacklinkCommitV2 = {
+      annotationProtocolVersion: 2,
+      type: "backlink-commit",
+      referenceId: capture.referenceId,
+      setId: "set-1",
+      profileId: "web",
+      sessionId: "session-demo",
+      userMessageId: "user-message-42",
+      userAnchorId: "user-node-42",
+      userTextHash: "sha256:30101ebf30101ebf30101ebf30101ebf30101ebf30101ebf30101ebf30101ebf",
+    };
+
+    const first = await commitReferenceBacklink(vault, capture, commit, undefined, 200);
+    const recovered = await commitReferenceBacklink(vault, capture, commit, undefined, 300);
+    expect(recovered).toEqual({ ...first, writtenAt: 300 });
+    expect(vault.writes).toBe(1);
+    expect(vault.files.get(notePath)).toContain(`"referenceId":"${capture.referenceId}"`);
+    expect(vault.files.get(notePath)).toContain(`"setId":"set-1"`);
+  });
+
+  it("rejects conflicting retries and concurrent note revisions without overwriting", async () => {
+    const vault = new MemoryVault();
+    vault.files.set(notePath, original);
+    const capture = createObsidianReferenceCapture({
+      actionId: "action-1", referenceId: pending.citationId, vaultId: "vault-1", notePath,
+      blockId: "generation-definition", occurrence: 0, selectedText: pending.text, markdown: original, capturedAt: 100,
+    });
+    const commit: BacklinkCommitV2 = {
+      annotationProtocolVersion: 2, type: "backlink-commit", referenceId: capture.referenceId,
+      setId: "set-1", profileId: "web", sessionId: "session-demo", userMessageId: "user-1", userAnchorId: "anchor-1",
+      userTextHash: "sha256:30101ebf30101ebf30101ebf30101ebf30101ebf30101ebf30101ebf30101ebf",
+    };
+    const receipt = await commitReferenceBacklink(vault, capture, commit, undefined, 200);
+    await expect(commitReferenceBacklink(vault, capture, { ...commit, setId: "set-2" }, receipt, 300))
+      .rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+
+    const secondVault = new MemoryVault();
+    secondVault.files.set(notePath, `${original}\n用户修改\n`);
+    await expect(commitReferenceBacklink(secondVault, capture, commit, undefined, 200))
+      .rejects.toMatchObject({ code: "REVISION_CONFLICT" });
+    expect(secondVault.writes).toBe(0);
   });
 });

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { captureEditorSelection } from "../src/selection/editor-menu.ts";
 import { captureReadingSelection } from "../src/selection/reading-menu.ts";
-import { contentRevision } from "../src/vault/session-notes.ts";
+import { documentHash, selectedTextHash } from "../src/protocol.ts";
 
 class FakeEditor {
   value = "# Generation\n\nGeneration 保存完整组合。\n";
@@ -27,18 +27,30 @@ describe("Obsidian selection capture", () => {
     const editor = new FakeEditor();
     editor.selection = "  Generation 保存完整组合。\r\n";
     const result = captureEditorSelection(editor, { path: "架构/DSH维护引擎.md" }, {
-      createCitationId: () => "76213b70-7f6e-41be-b2e3-1b195cbf1268",
+      vaultId: "vault-1",
+      createReferenceId: () => "76213b70-7f6e-41be-b2e3-1b195cbf1268",
+      createActionId: () => "action-1",
+      now: () => 1_777_000_000_000,
     });
 
     expect(result).toMatchObject({
-      citationId: "76213b70-7f6e-41be-b2e3-1b195cbf1268",
-      notePath: "架构/DSH维护引擎.md",
-      heading: "Generation",
-      text: "Generation 保存完整组合。",
-      blockId: expect.stringMatching(/^dsh-note-[a-f0-9]{8}$/),
+      type: "reference-capture",
+      actionId: "action-1",
+      referenceId: "76213b70-7f6e-41be-b2e3-1b195cbf1268",
+      source: {
+        selectedText: "Generation 保存完整组合。",
+        locator: {
+          vaultId: "vault-1",
+          notePath: "架构/DSH维护引擎.md",
+          heading: "Generation",
+          blockId: expect.stringMatching(/^dsh-note-[a-f0-9]{8}$/),
+          occurrence: 0,
+          selectedTextHash: selectedTextHash("Generation 保存完整组合。"),
+        },
+        snapshot: { markdown: editor.value, documentHash: documentHash(editor.value), freshness: "captured" },
+      },
     });
     expect(editor.replaceRange).toHaveBeenCalledOnce();
-    expect(result?.contentHash).toBe(contentRevision(editor.value));
   });
 
   it("ignores empty editor selections without changing the note", () => {
@@ -63,14 +75,37 @@ describe("Obsidian selection capture", () => {
     });
 
     expect(captureReadingSelection(view, makeSelection(previewNode), {
-      createCitationId: () => "76213b70-7f6e-41be-b2e3-1b195cbf1268",
+      vaultId: "vault-1",
+      createReferenceId: () => "76213b70-7f6e-41be-b2e3-1b195cbf1268",
+      createActionId: () => "action-1",
     })).toMatchObject({
-      notePath: "架构/DSH维护引擎.md",
-      blockId: "generation-definition",
-      heading: "Generation",
-      text: "Generation 保存完整组合。",
+      source: {
+        selectedText: "Generation 保存完整组合。",
+        locator: {
+          vaultId: "vault-1",
+          notePath: "架构/DSH维护引擎.md",
+          blockId: "generation-definition",
+          heading: "Generation",
+          occurrence: 0,
+        },
+      },
       requiresBlockIdWrite: false,
     });
     expect(captureReadingSelection(view, makeSelection(outsideNode))).toBeNull();
+  });
+
+  it("refuses an ambiguous repeated reading selection instead of defaulting occurrence to zero", () => {
+    const previewNode = {};
+    const view = {
+      file: { path: "重复.md" },
+      containerEl: { contains: (node: unknown) => node === previewNode },
+      getViewData: () => "重复段落\n\n重复段落\n",
+    };
+    const selection = {
+      rangeCount: 1,
+      toString: () => "重复段落",
+      getRangeAt: () => ({ commonAncestorContainer: previewNode }),
+    };
+    expect(captureReadingSelection(view, selection, { vaultId: "vault-1" })).toBeNull();
   });
 });

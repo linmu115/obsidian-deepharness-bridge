@@ -1,4 +1,12 @@
-import type { PendingCitation, ResolvedCitation } from "../protocol.ts";
+import {
+  backlinkCommitDigest,
+  documentHash,
+  type BacklinkCommitV2,
+  type BacklinkReceiptV2,
+  type ObsidianReferenceCaptureV2,
+  type PendingCitation,
+  type ResolvedCitation,
+} from "../protocol.ts";
 import { buildObsidianDshLink } from "../logical-link.ts";
 import { contentRevision, VaultDocumentError, type VaultTextAdapter } from "./session-notes.ts";
 
@@ -35,6 +43,10 @@ function findReference(source: string, citationId: string): { start: number; end
   REFERENCE_BLOCK.lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = REFERENCE_BLOCK.exec(source)) !== null) {
+    let raw: unknown;
+    try { raw = JSON.parse(match[1] ?? ""); }
+    catch { throw new VaultDocumentError("CORRUPT_MARKER", "A dsh-reference marker contains invalid metadata"); }
+    if (typeof raw !== "object" || raw === null || !("citationId" in raw)) continue;
     const metadata = parseReferenceMetadata(match[1] ?? "");
     if (metadata.citationId === citationId) {
       return { start: match.index, end: match.index + match[0].length, metadata };
@@ -44,6 +56,136 @@ function findReference(source: string, citationId: string): { start: number; end
   const ends = source.match(/<!-- \/dsh-reference -->/g)?.length ?? 0;
   if (starts !== ends) throw new VaultDocumentError("CORRUPT_MARKER", "A dsh-reference marker is incomplete");
   return null;
+}
+
+export interface ReferenceVaultProcessAdapter extends VaultTextAdapter {
+  process(path: string, update: (content: string) => string): Promise<string>;
+}
+
+export class ReferenceDocumentError extends Error {
+  constructor(readonly code: "REVISION_CONFLICT" | "CORRUPT_MARKER" | "NOTE_NOT_FOUND" | "IDEMPOTENCY_CONFLICT", message: string) {
+    super(message);
+    this.name = "ReferenceDocumentError";
+  }
+}
+
+interface ReferenceMetadataV2 {
+  referenceId: string;
+  setId: string;
+  profileId: string;
+  sessionId: string;
+  userMessageId: string;
+  userAnchorId: string;
+  userTextHash: string;
+  commitDigest: string;
+  blockId: string;
+}
+
+function parseV2Metadata(value: string): ReferenceMetadataV2 | null {
+  let raw: unknown;
+  try { raw = JSON.parse(value); }
+  catch { throw new ReferenceDocumentError("CORRUPT_MARKER", "A dsh-reference marker contains invalid JSON"); }
+  if (typeof raw !== "object" || raw === null || !("referenceId" in raw)) return null;
+  const metadata = raw as Partial<ReferenceMetadataV2>;
+  for (const key of ["referenceId", "setId", "profileId", "sessionId", "userMessageId", "userAnchorId", "userTextHash", "commitDigest", "blockId"] as const) {
+    if (typeof metadata[key] !== "string" || metadata[key] === "") {
+      throw new ReferenceDocumentError("CORRUPT_MARKER", `A v2 dsh-reference marker is missing ${key}`);
+    }
+  }
+  return metadata as ReferenceMetadataV2;
+}
+
+function findV2Reference(source: string, referenceId: string): ReferenceMetadataV2 | null {
+  REFERENCE_BLOCK.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = REFERENCE_BLOCK.exec(source)) !== null) {
+    const metadata = parseV2Metadata(match[1] ?? "");
+    if (metadata?.referenceId === referenceId) return metadata;
+  }
+  const starts = source.match(/<!-- dsh-reference:/g)?.length ?? 0;
+  const ends = source.match(/<!-- \/dsh-reference -->/g)?.length ?? 0;
+  if (starts !== ends) throw new ReferenceDocumentError("CORRUPT_MARKER", "A dsh-reference marker is incomplete");
+  return null;
+}
+
+function renderV2Reference(
+  capture: ObsidianReferenceCaptureV2,
+  commit: BacklinkCommitV2,
+  commitDigest: string,
+  blockId: string,
+): string {
+  const metadata: ReferenceMetadataV2 = {
+    referenceId: commit.referenceId,
+    setId: commit.setId,
+    profileId: commit.profileId,
+    sessionId: commit.sessionId,
+    userMessageId: commit.userMessageId,
+    userAnchorId: commit.userAnchorId,
+    userTextHash: commit.userTextHash,
+    commitDigest,
+    blockId,
+  };
+  const logicalLink = buildObsidianDshLink({
+    sessionId: commit.sessionId,
+    anchorId: commit.userAnchorId,
+    quoteHash: commit.userTextHash,
+    setId: commit.setId,
+    referenceId: commit.referenceId,
+  });
+  return [
+    `<!-- dsh-reference:${JSON.stringify(metadata)} -->`,
+    "> [!dsh-reference]",
+    `> [[DSH会话-${safeWikiText(commit.sessionId)}#^${safeWikiText(commit.userAnchorId)}|DSH 用户提问]]`,
+    `> [打开 DSH 会话](${logicalLink})`,
+    `> 引用内容：${capture.source.selectedText.split("\n").join("\n> ")}`,
+    `> ^${blockId}`,
+    "<!-- /dsh-reference -->",
+  ].join("\n");
+}
+
+export async function commitReferenceBacklink(
+  vault: ReferenceVaultProcessAdapter,
+  capture: ObsidianReferenceCaptureV2,
+  commit: BacklinkCommitV2,
+  existingReceipt?: BacklinkReceiptV2,
+  writtenAt = Date.now(),
+): Promise<BacklinkReceiptV2> {
+  if (capture.referenceId !== commit.referenceId) {
+    throw new ReferenceDocumentError("IDEMPOTENCY_CONFLICT", "Capture and backlink reference IDs do not match");
+  }
+  const digest = backlinkCommitDigest(commit);
+  if (existingReceipt !== undefined) {
+    if (existingReceipt.referenceId !== commit.referenceId || existingReceipt.commitDigest !== digest) {
+      throw new ReferenceDocumentError("IDEMPOTENCY_CONFLICT", "Backlink retry conflicts with the persisted receipt");
+    }
+    return existingReceipt;
+  }
+  const notePath = capture.source.locator.notePath;
+  const blockId = `dsh-ref-${commit.referenceId.slice(0, 8)}`;
+  let recoveredBlockId: string | undefined;
+  const output = await vault.process(notePath, (source) => {
+    const marker = findV2Reference(source, commit.referenceId);
+    if (marker !== null) {
+      if (marker.commitDigest !== digest) {
+        throw new ReferenceDocumentError("IDEMPOTENCY_CONFLICT", "Backlink marker belongs to a different commit");
+      }
+      recoveredBlockId = marker.blockId;
+      return source;
+    }
+    if (documentHash(source) !== capture.source.snapshot.documentHash) {
+      throw new ReferenceDocumentError("REVISION_CONFLICT", "The note changed after the reference was captured");
+    }
+    const separator = source.length === 0 ? "" : source.endsWith("\n") ? "\n" : "\n\n";
+    return `${source}${separator}${renderV2Reference(capture, commit, digest, blockId)}\n`;
+  });
+  return {
+    referenceId: commit.referenceId,
+    commitDigest: digest,
+    notePath,
+    blockId: recoveredBlockId ?? blockId,
+    revision: contentRevision(output),
+    writtenAt,
+  };
 }
 
 function safeWikiText(value: string): string {
