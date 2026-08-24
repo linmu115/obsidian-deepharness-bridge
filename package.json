@@ -2,6 +2,10 @@
   "name": "obsidian-deepharness-bridge",
   "version": "0.2.0",
   "description": "Obsidian companion bridge for DeepSeek Harness conversations",
+  "dshKnowledge": {
+    "annotationProtocolVersion": 2,
+    "stickerProtocolVersion": 1
+  },
   "type": "module",
   "license": "MIT",
   "main": "main.js",

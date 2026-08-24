@@ -19,6 +19,7 @@ Baseline commit: `31fb625` (`feat: upgrade Obsidian reference bridge to protocol
 - Browser preflight still requires an explicitly allowlisted origin, and an explicit untrusted origin still receives HTTP 403.
 - Protocol-v2 health and handshake responses now return the actual `bridgeOrigin`.
 - Typed application failures preserve `code` in the JSON payload so DSH can distinguish source changes, revision conflicts, idempotency conflicts and missing notes.
+- Package metadata declares annotation protocol 2 and sticker protocol 1 so Maintenance can reject mismatched artifacts before deployment.
 
 ## Verification
 
