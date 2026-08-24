@@ -45,6 +45,8 @@ interface TokenRecord {
   expiresAt: number;
 }
 
+const LOCAL_HOST_CALLER = "local-host";
+
 export interface SaveSessionNoteRequest {
   document: SessionNoteDocument;
   expectedRevision: string;
@@ -101,9 +103,12 @@ function json(
   response.end(`${JSON.stringify(value)}\n`);
 }
 
-function errorPayload(error: unknown): { error: string } {
-  if (error instanceof Error) return { error: error.message };
-  return { error: "Unknown bridge error" };
+function errorPayload(error: unknown): { error: string; code?: string } {
+  const message = error instanceof Error ? error.message : "Unknown bridge error";
+  const code = error && typeof error === "object" && "code" in error
+    ? (error as { code?: unknown }).code
+    : undefined;
+  return typeof code === "string" ? { error: message, code } : { error: message };
 }
 
 function applicationErrorStatus(error: unknown): number | null {
@@ -159,6 +164,7 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
   const referenceClaims = new Map<string, ReferenceClaimV2>();
   const inMemoryNotes = new Map<string, SessionNoteDocument>();
   let latestTokenExpiry: number | null = null;
+  let listeningOrigin = "";
   let closed = false;
 
   const server = createServer((request, response) => {
@@ -167,9 +173,11 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
       const originHeader = request.headers.origin;
       const requestOrigin = typeof originHeader === "string" ? originHeader : undefined;
       const allowedOrigin = requestOrigin && allowedOrigins.has(requestOrigin) ? requestOrigin : undefined;
-      if (!allowedOrigin) throw new HttpError(403, "Request origin is not allowed");
+      const callerIdentity = allowedOrigin ?? (requestOrigin === undefined ? LOCAL_HOST_CALLER : undefined);
+      if (!callerIdentity) throw new HttpError(403, "Request origin is not allowed");
 
       if (request.method === "OPTIONS") {
+        if (!allowedOrigin) throw new HttpError(403, "Browser preflight requires an allowed origin");
         response.statusCode = 204;
         response.setHeader("access-control-allow-origin", allowedOrigin);
         response.setHeader("access-control-allow-methods", "GET, POST, PUT, OPTIONS");
@@ -189,6 +197,7 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
         json(response, 200, {
           annotationProtocolVersion: ANNOTATION_PROTOCOL_VERSION,
           stickerProtocolVersion: STICKER_PROTOCOL_VERSION,
+          bridgeOrigin: listeningOrigin,
           status: "ok",
           capabilities: ["reference-capture-v2", "reference-refresh", "backlink-commit-v2"],
         }, allowedOrigin);
@@ -202,12 +211,13 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
         }
         const token = randomBytes(32).toString("base64url");
         const expiresAt = now() + tokenTtlMs;
-        tokens.set(token, { clientId: input.clientId, origin: allowedOrigin, expiresAt });
+        tokens.set(token, { clientId: input.clientId, origin: callerIdentity, expiresAt });
         latestTokenExpiry = expiresAt;
         const v2 = requestUrl.pathname.startsWith("/v2/");
         json(response, 200, v2 ? {
           annotationProtocolVersion: ANNOTATION_PROTOCOL_VERSION,
           stickerProtocolVersion: STICKER_PROTOCOL_VERSION,
+          bridgeOrigin: listeningOrigin,
           capabilities: ["reference-capture-v2", "reference-refresh", "backlink-commit-v2"],
           clientId: input.clientId,
           token,
@@ -218,7 +228,7 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
 
       const token = bearerToken(request);
       const authentication = token ? tokens.get(token) : undefined;
-      if (!authentication || authentication.origin !== allowedOrigin || authentication.expiresAt <= now()) {
+      if (!authentication || authentication.origin !== callerIdentity || authentication.expiresAt <= now()) {
         if (token) tokens.delete(token);
         throw new HttpError(401, "Handshake token is missing or expired");
       }
@@ -371,9 +381,10 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
     });
   });
   const address = server.address() as AddressInfo;
+  listeningOrigin = `http://127.0.0.1:${address.port}`;
 
   return {
-    origin: `http://127.0.0.1:${address.port}`,
+    origin: listeningOrigin,
     get tokenExpiresAt() {
       return latestTokenExpiry;
     },

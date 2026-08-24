@@ -1071,7 +1071,7 @@ packages:
     engines: {node: '>=8'}
 
   dsh-annotation-core@file:D:/AI/DSH-Plugin-Repositories/dsh-annotation-core/dsh-annotation-core-0.1.0.tgz:
-    resolution: {integrity: sha512-YS1c4rZqISnbEDSSyIhLpxdZjPxdpPwsxu8eqxtTah2NT785yjI2wD+SvGHRC+E0FQrKdv+lSNVvh/ft18iA1A==, tarball: file:D:/AI/DSH-Plugin-Repositories/dsh-annotation-core/dsh-annotation-core-0.1.0.tgz}
+    resolution: {integrity: sha512-r/nhSo+c0npvh3hRC2K9SAdY5Ol/lKr23t2zjRf85e8HvsGWwiyS2y2F2M4TYFfkLEX10GdXqvma9ZRBMNE6nw==, tarball: file:D:/AI/DSH-Plugin-Repositories/dsh-annotation-core/dsh-annotation-core-0.1.0.tgz}
     version: 0.1.0
     engines: {node: '>=20'}
     peerDependencies:

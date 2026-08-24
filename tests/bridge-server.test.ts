@@ -70,7 +70,38 @@ describe("loopback bridge server", () => {
     const bridge = await start();
     const v2 = await request(bridge, "/v2/health", { headers: { origin: DSH_ORIGIN } });
     expect(v2.status).toBe(200);
-    expect(await v2.json()).toMatchObject({ annotationProtocolVersion: 2, stickerProtocolVersion: 1, status: "ok" });
+    expect(await v2.json()).toMatchObject({
+      annotationProtocolVersion: 2,
+      stickerProtocolVersion: 1,
+      bridgeOrigin: bridge.origin,
+      status: "ok",
+    });
+  });
+
+  it("accepts the loopback Host without a browser Origin and binds its token to that caller", async () => {
+    const bridge = await start();
+    const health = await request(bridge, "/v2/health");
+    expect(health.status).toBe(200);
+    expect(await health.json()).toMatchObject({ bridgeOrigin: bridge.origin });
+
+    const handshakeResponse = await request(bridge, "/v2/handshake", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ clientId: "dsh-host" }),
+    });
+    expect(handshakeResponse.status).toBe(200);
+    const handshakeBody = await handshakeResponse.json() as { token: string; bridgeOrigin: string };
+    expect(handshakeBody.bridgeOrigin).toBe(bridge.origin);
+
+    const localRequest = await request(bridge, "/v2/actions/pending?after=0", {
+      headers: { authorization: `Bearer ${handshakeBody.token}` },
+    });
+    expect(localRequest.status).toBe(200);
+
+    const browserReuse = await request(bridge, "/v2/actions/pending?after=0", {
+      headers: authorized(handshakeBody.token),
+    });
+    expect(browserReuse.status).toBe(401);
   });
 
   it("binds only to loopback and reports protocol health", async () => {
@@ -327,5 +358,26 @@ describe("loopback bridge server", () => {
     expect(onDiscardReference).toHaveBeenCalledOnce();
     expect(onCommitBacklink).toHaveBeenCalledOnce();
     expect(onOpenNote).toHaveBeenCalledOnce();
+  });
+
+  it("preserves typed application error codes in the HTTP response", async () => {
+    const bridge = await start({
+      onRefreshReference: async () => {
+        throw Object.assign(new Error("source changed"), { code: "SOURCE_CHANGED" });
+      },
+    });
+    const token = await handshakeV2(bridge);
+    const response = await request(bridge, "/v2/references/reference-v2/refresh", {
+      method: "POST",
+      headers: authorized(token, { "content-type": "application/json" }),
+      body: JSON.stringify({
+        annotationProtocolVersion: 2,
+        type: "reference-refresh",
+        referenceId: "reference-v2",
+        knownDocumentHash: "sha256:30101ebf30101ebf30101ebf30101ebf30101ebf30101ebf30101ebf30101ebf",
+      }),
+    });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: "source changed", code: "SOURCE_CHANGED" });
   });
 });
