@@ -16,17 +16,20 @@ importers:
         specifier: ^24.3.0
         version: 24.13.3
       dsh-annotation-core:
-        specifier: file:D:/AI/DSH-Plugin-Repositories/dsh-annotation-core/dsh-annotation-core-0.1.0.tgz
-        version: file:D:/AI/DSH-Plugin-Repositories/dsh-annotation-core/dsh-annotation-core-0.1.0.tgz(79bdcb511dc0dbb9e151443407144af5)
+        specifier: https://codeload.github.com/linmu115/dsh-annotation-core/tar.gz/99616f128d7beb175b023714ed906e976ac6f827
+        version: https://codeload.github.com/linmu115/dsh-annotation-core/tar.gz/99616f128d7beb175b023714ed906e976ac6f827(79bdcb511dc0dbb9e151443407144af5)
       obsidian:
         specifier: ^1.13.1
         version: 1.13.1(@codemirror/state@6.5.0)(@codemirror/view@6.38.6)
       tsdown:
         specifier: ^0.22.14
-        version: 0.22.14(typescript@5.9.3)
+        version: 0.22.14(typescript@5.9.3)(unrun@0.3.1)
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
+      unrun:
+        specifier: ^0.3.1
+        version: 0.3.1
       vitest:
         specifier: ^4.1.11
         version: 4.1.11(@types/node@24.13.3)(vite@8.2.2(@types/node@24.13.3))
@@ -1070,9 +1073,9 @@ packages:
     resolution: {integrity: sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ==}
     engines: {node: '>=8'}
 
-  dsh-annotation-core@file:D:/AI/DSH-Plugin-Repositories/dsh-annotation-core/dsh-annotation-core-0.1.0.tgz:
-    resolution: {integrity: sha512-yu4Dp84GrmHpFVFXGoOlK6B55Nm6HiwNPxIxh5PYjnFdQ9p3DTPAXtDpotFn4qcy0MrkzyMy9saU9tEFky+Ppg==, tarball: file:D:/AI/DSH-Plugin-Repositories/dsh-annotation-core/dsh-annotation-core-0.1.0.tgz}
-    version: 0.1.0
+  dsh-annotation-core@https://codeload.github.com/linmu115/dsh-annotation-core/tar.gz/99616f128d7beb175b023714ed906e976ac6f827:
+    resolution: {gitHosted: true, integrity: sha512-Mx9QT5ee1qT/eFfYFDWXordYsTcMeLhzJ7FPXA1QbEFh9PsTDisb38+y6zNnraA1KKH88yvdNuVavgAQ/7IdpA==, tarball: https://codeload.github.com/linmu115/dsh-annotation-core/tar.gz/99616f128d7beb175b023714ed906e976ac6f827}
+    version: 0.1.1
     engines: {node: '>=20'}
     peerDependencies:
       '@deepseek-ai/cordis': ^4.0.1
@@ -1384,6 +1387,16 @@ packages:
 
   undici-types@7.18.2:
     resolution: {integrity: sha512-AsuCzffGHJybSaRrmr5eHr81mwJU3kjw6M+uprWvCXiNeN9SOGwQ3Jn8jb8m3Z6izVgknn1R0FTCEAP2QrLY/w==}
+
+  unrun@0.3.1:
+    resolution: {integrity: sha512-onIck/oNnCaytwths1ZVp1LK2Gq2hPoyFhiHebObuUXqR3S0uHuLLaBK8K6mRRgV7Ptip8AnNvaUsgzwWwBZuA==}
+    engines: {node: ^22.13.0 || >=24.0.0}
+    hasBin: true
+    peerDependencies:
+      synckit: ^0.11.11
+    peerDependenciesMeta:
+      synckit:
+        optional: true
 
   use-sync-external-store@1.2.0:
     resolution: {integrity: sha512-eEgnFxGQ1Ife9bzYs6VLi8/4X6CObHMw9Qr9tPY43iKwsPw8xE8+EFsf/2cFZ5S3esXgpWgtSCtLNS41F+sKPA==}
@@ -2466,7 +2479,7 @@ snapshots:
 
   detect-libc@2.1.2: {}
 
-  dsh-annotation-core@file:D:/AI/DSH-Plugin-Repositories/dsh-annotation-core/dsh-annotation-core-0.1.0.tgz(79bdcb511dc0dbb9e151443407144af5):
+  dsh-annotation-core@https://codeload.github.com/linmu115/dsh-annotation-core/tar.gz/99616f128d7beb175b023714ed906e976ac6f827(79bdcb511dc0dbb9e151443407144af5):
     dependencies:
       '@deepseek-ai/cordis': 4.0.1(@deepseek-ai/cordis-plugin-include@1.0.6)(@deepseek-ai/cordis-plugin-loader@1.0.2)
       '@deepseek-ai/dsh-agent': 0.1.1-rc.2(c1537a8836b04097f168b024f1e38d85)
@@ -2679,7 +2692,7 @@ snapshots:
 
   tree-kill@1.2.2: {}
 
-  tsdown@0.22.14(typescript@5.9.3):
+  tsdown@0.22.14(typescript@5.9.3)(unrun@0.3.1):
     dependencies:
       ansis: 4.3.1
       cac: 7.0.0
@@ -2698,6 +2711,7 @@ snapshots:
       verkit: 0.3.2
     optionalDependencies:
       typescript: 5.9.3
+      unrun: 0.3.1
     transitivePeerDependencies:
       - '@typescript/native-preview'
       - '@volar/typescript'
@@ -2712,6 +2726,10 @@ snapshots:
       quansync: 1.0.0
 
   undici-types@7.18.2: {}
+
+  unrun@0.3.1:
+    dependencies:
+      rolldown: 1.2.5
 
   use-sync-external-store@1.2.0(react@18.3.1):
     dependencies:
