@@ -1,5 +1,6 @@
 packages:
   - .
 
-onlyBuiltDependencies:
-  - esbuild
+allowBuilds:
+  'dsh-annotation-core@https://codeload.github.com/linmu115/dsh-annotation-core/tar.gz/99616f128d7beb175b023714ed906e976ac6f827': true
+  esbuild: true
