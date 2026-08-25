@@ -1,6 +1,35 @@
 import { z } from "zod";
 
-export const PROTOCOL_VERSION = 1 as const;
+export {
+  ANNOTATION_PROTOCOL_VERSION,
+  BacklinkCommitV2Schema,
+  BacklinkReceiptV2Schema,
+  ObsidianNoteReferenceSourceSchema,
+  ObsidianReferenceCaptureV2Schema,
+  ReferenceClaimV2Schema,
+  ReferenceDiscardV2Schema,
+  ReferenceRefreshRequestV2Schema,
+  ReferenceRefreshResultV2Schema,
+  backlinkCommitDigest,
+  canonicalSha256,
+  documentHash,
+  normalizeSourceText,
+  selectedTextHash,
+} from "dsh-annotation-core/protocol";
+export type {
+  BacklinkCommitV2,
+  BacklinkReceiptV2,
+  ObsidianNoteReferenceSource,
+  ObsidianReferenceCaptureV2,
+  ReferenceClaimV2,
+  ReferenceDiscardV2,
+  ReferenceRefreshRequestV2,
+  ReferenceRefreshResultV2,
+} from "dsh-annotation-core/protocol";
+
+export const STICKER_PROTOCOL_VERSION = 1 as const;
+/** Historical alias retained for sticker/session-note/deep-link v1 only. */
+export const PROTOCOL_VERSION = STICKER_PROTOCOL_VERSION;
 
 export const stickerSchema = z.object({
   stickerId: z.string().uuid(),

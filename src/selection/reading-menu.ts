@@ -1,7 +1,8 @@
 import type { Constructor, MarkdownView, Menu, Plugin, TFile } from "obsidian";
 
-import { PROTOCOL_VERSION } from "../protocol.ts";
+import { documentHash } from "../protocol.ts";
 import { contentRevision } from "../vault/session-notes.ts";
+import { createObsidianReferenceCapture, selectionOffsets } from "../vault/reference-source.ts";
 import type { NoteSelection, SelectionCaptureOptions } from "./editor-menu.ts";
 
 interface SelectionLike {
@@ -20,20 +21,7 @@ interface ProcessVaultLike {
   process(file: TFile, callback: (content: string) => string): Promise<string>;
 }
 
-function normalize(value: string): string {
-  return value.replace(/\r\n?/g, "\n").trim();
-}
-
-function findOccurrence(source: string, text: string, occurrence: number): number {
-  let cursor = 0;
-  for (let index = 0; index <= occurrence; index += 1) {
-    const match = source.indexOf(text, cursor);
-    if (match < 0) return -1;
-    if (index === occurrence) return match;
-    cursor = match + Math.max(1, text.length);
-  }
-  return -1;
-}
+function normalize(value: string): string { return value.replace(/\r\n?/g, "\n").normalize("NFC").trim(); }
 
 function headingBefore(source: string, offset: number): string | undefined {
   const lines = source.slice(0, offset).split(/\r?\n/);
@@ -48,6 +36,38 @@ function makeBlockId(path: string, text: string, occurrence: number): string {
   return `dsh-note-${contentRevision(`${path}:${occurrence}:${text}`).slice(7, 15)}`;
 }
 
+function blockIdFromDom(node: unknown): string | undefined {
+  if (!node || typeof node !== "object") return undefined;
+  const candidate = node as {
+    parentElement?: unknown;
+    closest?: (selector: string) => unknown;
+    getAttribute?: (name: string) => string | null;
+    dataset?: { blockId?: string };
+  };
+  const element = typeof candidate.closest === "function" ? candidate : candidate.parentElement as typeof candidate | undefined;
+  const block = element && typeof element.closest === "function"
+    ? element.closest("[data-block-id], [id]") as typeof candidate | null
+    : null;
+  const raw = block?.dataset?.blockId ?? block?.getAttribute?.("data-block-id") ?? block?.getAttribute?.("id") ?? undefined;
+  return raw?.replace(/^block-/, "") || undefined;
+}
+
+function lineForOffset(source: string, offset: number): { start: number; end: number; text: string } {
+  const start = source.lastIndexOf("\n", offset) + 1;
+  const endAt = source.indexOf("\n", offset);
+  const end = endAt < 0 ? source.length : endAt;
+  return { start, end, text: source.slice(start, end) };
+}
+
+function occurrenceFromDomOrUniqueness(source: string, text: string, node: unknown): number | undefined {
+  const offsets = selectionOffsets(source, text);
+  if (offsets.length === 1) return 0;
+  const domBlockId = blockIdFromDom(node);
+  if (!domBlockId) return undefined;
+  const matching = offsets.findIndex((offset) => lineForOffset(source, offset).text.includes(`^${domBlockId}`));
+  return matching < 0 ? undefined : matching;
+}
+
 export function captureReadingSelection(
   view: ReadingViewLike,
   selection: SelectionLike,
@@ -58,25 +78,33 @@ export function captureReadingSelection(
   if (!view.containerEl.contains(range.commonAncestorContainer)) return null;
   const text = normalize(selection.toString());
   if (!text) return null;
-  const source = view.getViewData();
-  const offset = source.indexOf(text);
-  if (offset < 0) return null;
-  const occurrence = 0;
-  const lineEndIndex = source.indexOf("\n", offset + text.length);
-  const lineEnd = lineEndIndex < 0 ? source.length : lineEndIndex;
-  const line = source.slice(source.lastIndexOf("\n", offset) + 1, lineEnd);
+  const source = view.getViewData().replace(/\r\n?/g, "\n");
+  const occurrence = occurrenceFromDomOrUniqueness(source, text, range.commonAncestorContainer);
+  if (occurrence === undefined) return null;
+  const offset = selectionOffsets(source, text)[occurrence];
+  if (offset === undefined) return null;
+  const line = lineForOffset(source, offset).text;
   const existingBlockId = /(?:^|\s)\^([A-Za-z0-9-]+)\s*$/.exec(line)?.[1];
-  const heading = headingBefore(source, offset);
+  const blockId = existingBlockId ?? makeBlockId(view.file.path, text, occurrence);
+  const values = {
+    vaultId: options.vaultId ?? "vault-unconfigured",
+    referenceId: options.createReferenceId?.() ?? crypto.randomUUID(),
+    actionId: options.createActionId?.() ?? crypto.randomUUID(),
+    capturedAt: options.now?.() ?? Date.now(),
+  };
   return {
-    protocolVersion: PROTOCOL_VERSION,
-    type: "pending-citation",
-    citationId: options.createCitationId?.() ?? crypto.randomUUID(),
-    notePath: view.file.path,
-    blockId: existingBlockId ?? makeBlockId(view.file.path, text, occurrence),
-    ...(heading ? { heading } : {}),
-    text,
-    contentHash: contentRevision(source),
-    occurrence,
+    ...createObsidianReferenceCapture({
+      actionId: values.actionId,
+      referenceId: values.referenceId,
+      vaultId: values.vaultId,
+      notePath: view.file.path,
+      ...(headingBefore(source, offset) ? { heading: headingBefore(source, offset)! } : {}),
+      blockId,
+      occurrence,
+      selectedText: text,
+      markdown: source,
+      capturedAt: values.capturedAt,
+    }),
     requiresBlockIdWrite: !existingBlockId,
   };
 }
@@ -88,20 +116,32 @@ export async function ensureReadingBlockId(
 ): Promise<NoteSelection> {
   if (!selection.requiresBlockIdWrite) return selection;
   const output = await vault.process(file, (content) => {
-    const offset = findOccurrence(content, selection.text, selection.occurrence);
-    if (offset < 0) throw new Error("Selected paragraph changed before its block ID could be written");
-    const lineEndIndex = content.indexOf("\n", offset + selection.text.length);
-    const lineEnd = lineEndIndex < 0 ? content.length : lineEndIndex;
-    const line = content.slice(content.lastIndexOf("\n", offset) + 1, lineEnd);
-    if (/(?:^|\s)\^[A-Za-z0-9-]+\s*$/.test(line)) return content;
-    return `${content.slice(0, lineEnd)} ^${selection.blockId}${content.slice(lineEnd)}`;
+    const source = content.replace(/\r\n?/g, "\n");
+    const offset = selectionOffsets(source, selection.source.selectedText)[selection.source.locator.occurrence];
+    if (offset === undefined) throw new Error("Selected paragraph changed before its block ID could be written");
+    const line = lineForOffset(source, offset);
+    if (/(?:^|\s)\^[A-Za-z0-9-]+\s*$/.test(line.text)) return source;
+    return `${source.slice(0, line.end)} ^${selection.source.locator.blockId}${source.slice(line.end)}`;
   });
-  return { ...selection, contentHash: contentRevision(output), requiresBlockIdWrite: false };
+  return {
+    ...selection,
+    source: {
+      ...selection.source,
+      snapshot: {
+        markdown: output,
+        documentHash: documentHash(output),
+        capturedAt: selection.source.snapshot.capturedAt,
+        freshness: "captured",
+      },
+    },
+    requiresBlockIdWrite: false,
+  };
 }
 
 export interface ReadingMenuOptions {
   markdownViewType: Constructor<MarkdownView>;
   createMenu(): Menu;
+  captureOptions?(): SelectionCaptureOptions;
   onCitation(selection: NoteSelection): Promise<void>;
 }
 
@@ -110,7 +150,7 @@ export function registerReadingSelectionMenu(plugin: Plugin, options: ReadingMen
     const view = plugin.app.workspace.getActiveViewOfType(options.markdownViewType);
     const selection = document.getSelection();
     if (!view || !selection) return;
-    const captured = captureReadingSelection(view, selection);
+    const captured = captureReadingSelection(view, selection, options.captureOptions?.());
     if (!captured) return;
     event.preventDefault();
     const menu = options.createMenu();

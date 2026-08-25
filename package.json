@@ -1,7 +1,41 @@
 {
   "name": "obsidian-deepharness-bridge",
-  "version": "0.1.3",
+  "version": "0.2.0",
+  "private": true,
   "description": "Obsidian companion bridge for DeepSeek Harness conversations",
+  "dshKnowledge": {
+    "annotationProtocolVersion": 2,
+    "stickerProtocolVersion": 1
+  },
+  "dshWorkshop": {
+    "schema": "omdsh-workshop-package/v1",
+    "type": "plugin",
+    "integration": {
+      "protocol": "third-party",
+      "artifact": "manifest.json"
+    },
+    "install": {
+      "mode": "guided",
+      "adapter": "obsidian-community-plugin",
+      "failurePolicy": "manual",
+      "touchesCurrentBeforeActivation": false
+    },
+    "lifecycle": {
+      "activation": "restart-plugin",
+      "dispose": "supported"
+    },
+    "permissions": [
+      "filesystem:vault",
+      "network:loopback",
+      "ui:modify"
+    ],
+    "evidence": {
+      "install": "docs/release/verification.md",
+      "failureIsolation": null,
+      "hotReload": null,
+      "remove": null
+    }
+  },
   "type": "module",
   "license": "MIT",
   "main": "main.js",
@@ -13,19 +47,22 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsdown",
+    "build": "tsdown --config-loader unrun --config tsdown.config.ts",
+    "prepack": "pnpm build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
-    "check": "pnpm typecheck && pnpm test && pnpm build"
+    "check": "pnpm typecheck && pnpm test && pnpm build && pnpm pack --dry-run --json"
   },
   "dependencies": {
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^24.3.0",
+    "dsh-annotation-core": "https://codeload.github.com/linmu115/dsh-annotation-core/tar.gz/99616f128d7beb175b023714ed906e976ac6f827",
     "obsidian": "^1.13.1",
     "tsdown": "^0.22.14",
     "typescript": "^5.9.3",
+    "unrun": "^0.3.1",
     "vitest": "^4.1.11"
   },
   "packageManager": "pnpm@11.19.0",
