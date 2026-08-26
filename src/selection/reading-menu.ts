@@ -106,6 +106,7 @@ export function captureReadingSelection(
       capturedAt: values.capturedAt,
     }),
     requiresBlockIdWrite: !existingBlockId,
+    blockIdOwnership: existingBlockId ? "pre-existing" : "plugin-created",
   };
 }
 
@@ -135,6 +136,7 @@ export async function ensureReadingBlockId(
       },
     },
     requiresBlockIdWrite: false,
+    blockIdOwnership: selection.blockIdOwnership,
   };
 }
 

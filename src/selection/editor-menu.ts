@@ -6,6 +6,7 @@ import { createObsidianReferenceCapture, selectionOffsets } from "../vault/refer
 
 export interface NoteSelection extends ObsidianReferenceCaptureV2 {
   requiresBlockIdWrite: boolean;
+  blockIdOwnership: "plugin-created" | "pre-existing";
 }
 
 export interface SelectionCaptureOptions {
@@ -84,6 +85,7 @@ export function captureEditorSelection(
   const selectedOffset = offsetAt(sourceBefore, from);
   const targetLine = editor.getLine(to.line);
   let blockId = blockIdOnLine(targetLine);
+  const blockIdOwnership = blockId ? "pre-existing" as const : "plugin-created" as const;
   if (!blockId) {
     blockId = stableBlockId(file.path, from.line, text);
     editor.replaceRange(` ^${blockId}`, { line: to.line, ch: targetLine.length });
@@ -104,6 +106,7 @@ export function captureEditorSelection(
       capturedAt: values.now(),
     }),
     requiresBlockIdWrite: false,
+    blockIdOwnership,
   };
 }
 

@@ -49,8 +49,27 @@ describe("Obsidian selection capture", () => {
         },
         snapshot: { markdown: editor.value, documentHash: documentHash(editor.value), freshness: "captured" },
       },
+      blockIdOwnership: "plugin-created",
     });
     expect(editor.replaceRange).toHaveBeenCalledOnce();
+  });
+
+  it("preserves a pre-existing editor block ID and records that the plugin does not own it", () => {
+    const editor = new FakeEditor();
+    editor.value = "# Generation\n\nGeneration 保存完整组合。 ^user-owned\n";
+
+    const result = captureEditorSelection(editor, { path: "架构/DSH维护引擎.md" }, {
+      vaultId: "vault-1",
+      createReferenceId: () => "reference-existing",
+      createActionId: () => "action-existing",
+      now: () => 1_777_000_000_000,
+    });
+
+    expect(result).toMatchObject({
+      blockIdOwnership: "pre-existing",
+      source: { locator: { blockId: "user-owned" } },
+    });
+    expect(editor.replaceRange).not.toHaveBeenCalled();
   });
 
   it("ignores empty editor selections without changing the note", () => {
@@ -90,6 +109,7 @@ describe("Obsidian selection capture", () => {
         },
       },
       requiresBlockIdWrite: false,
+      blockIdOwnership: "pre-existing",
     });
     expect(captureReadingSelection(view, makeSelection(outsideNode))).toBeNull();
   });

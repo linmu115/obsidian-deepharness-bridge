@@ -20,10 +20,16 @@ export interface LegacyPendingCitationV1 {
   contentHash: string;
 }
 
+export type BlockIdOwnership = "plugin-created" | "pre-existing";
+
+interface MarkerOwnership {
+  blockIdOwnership: BlockIdOwnership;
+}
+
 export type PendingReferenceRecord =
-  | { state: "queued"; capture: ObsidianReferenceCaptureV2 }
-  | { state: "migrated-ready"; capture: ObsidianReferenceCaptureV2; legacy: LegacyPendingCitationV1 }
-  | { state: "claimed"; capture: ObsidianReferenceCaptureV2; claim: ReferenceClaimV2 }
+  | ({ state: "queued"; capture: ObsidianReferenceCaptureV2 } & MarkerOwnership)
+  | ({ state: "migrated-ready"; capture: ObsidianReferenceCaptureV2; legacy: LegacyPendingCitationV1 } & MarkerOwnership)
+  | ({ state: "claimed"; capture: ObsidianReferenceCaptureV2; claim: ReferenceClaimV2 } & MarkerOwnership)
   | {
       state: "needs-reselect";
       referenceId: string;
@@ -74,15 +80,35 @@ function isV2(value: unknown): value is StoredPluginDataV2 {
   return typeof value === "object" && value !== null && (value as { dataVersion?: unknown }).dataVersion === 2;
 }
 
+function markerOwnership(value: unknown, capture: ObsidianReferenceCaptureV2): BlockIdOwnership {
+  if (value === "plugin-created" || value === "pre-existing") return value;
+  return capture.source.locator.blockId.startsWith("dsh-note-") ? "plugin-created" : "pre-existing";
+}
+
 function validateV2(value: StoredPluginDataV2): StoredPluginDataV2 {
   const pendingReferences = value.pendingReferences.map((record): PendingReferenceRecord => {
-    if (record.state === "queued") return { state: "queued", capture: ObsidianReferenceCaptureV2Schema.parse(record.capture) };
-    if (record.state === "migrated-ready") return { state: "migrated-ready", capture: ObsidianReferenceCaptureV2Schema.parse(record.capture), legacy: record.legacy };
-    if (record.state === "claimed") return {
-      state: "claimed",
-      capture: ObsidianReferenceCaptureV2Schema.parse(record.capture),
-      claim: ReferenceClaimV2Schema.parse(record.claim),
-    };
+    if (record.state === "queued") {
+      const capture = ObsidianReferenceCaptureV2Schema.parse(record.capture);
+      return { state: "queued", capture, blockIdOwnership: markerOwnership(record.blockIdOwnership, capture) };
+    }
+    if (record.state === "migrated-ready") {
+      const capture = ObsidianReferenceCaptureV2Schema.parse(record.capture);
+      return {
+        state: "migrated-ready",
+        capture,
+        legacy: record.legacy,
+        blockIdOwnership: markerOwnership(record.blockIdOwnership, capture),
+      };
+    }
+    if (record.state === "claimed") {
+      const capture = ObsidianReferenceCaptureV2Schema.parse(record.capture);
+      return {
+        state: "claimed",
+        capture,
+        claim: ReferenceClaimV2Schema.parse(record.claim),
+        blockIdOwnership: markerOwnership(record.blockIdOwnership, capture),
+      };
+    }
     return record;
   });
   return {
@@ -141,7 +167,12 @@ export async function migrateStoredPluginData(raw: unknown, options: MigrationOp
       markdown,
       capturedAt: options.now(),
     });
-    pendingReferences.push({ state: "migrated-ready", capture, legacy });
+    pendingReferences.push({
+      state: "migrated-ready",
+      capture,
+      legacy,
+      blockIdOwnership: markerOwnership(undefined, capture),
+    });
   }
   return { dataVersion: 2, vaultId, settings, pendingReferences, backlinkReceipts: [] };
 }
@@ -154,15 +185,29 @@ export function releaseMigratedReference(
   if (index < 0) return { data, changed: false };
   const record = data.pendingReferences[index] as Extract<PendingReferenceRecord, { state: "migrated-ready" }>;
   const pendingReferences = [...data.pendingReferences];
-  pendingReferences[index] = { state: "queued", capture: record.capture };
+  pendingReferences[index] = {
+    state: "queued",
+    capture: record.capture,
+    blockIdOwnership: record.blockIdOwnership,
+  };
   return { data: { ...data, pendingReferences }, changed: true, capture: record.capture };
 }
 
-export function discardPendingReference(data: StoredPluginDataV2, referenceId: string): { data: StoredPluginDataV2; changed: boolean } {
+export function discardPendingReference(
+  data: StoredPluginDataV2,
+  referenceId: string,
+): { data: StoredPluginDataV2; changed: boolean; record?: PendingReferenceRecord } {
+  const record = data.pendingReferences.find((candidate) => (
+    candidate.state === "needs-reselect" ? candidate.referenceId === referenceId : candidate.capture.referenceId === referenceId
+  ));
   const pendingReferences = data.pendingReferences.filter((record) => (
     record.state === "needs-reselect" ? record.referenceId !== referenceId : record.capture.referenceId !== referenceId
   ));
   return pendingReferences.length === data.pendingReferences.length
     ? { data, changed: false }
-    : { data: { ...data, pendingReferences }, changed: true };
+    : {
+        data: { ...data, pendingReferences },
+        changed: true,
+        ...(record === undefined ? {} : { record }),
+      };
 }
