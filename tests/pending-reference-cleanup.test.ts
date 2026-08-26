@@ -10,6 +10,8 @@ class MemoryVault {
 
   async read(path: string): Promise<string | null> { return this.files.get(path) ?? null; }
 
+  async listMarkdownPaths(): Promise<string[]> { return [...this.files.keys()].filter((path) => path.endsWith(".md")); }
+
   async process(path: string, update: (content: string) => string): Promise<string> {
     const current = this.files.get(path);
     if (current === undefined) throw new Error(`missing: ${path}`);
@@ -79,6 +81,27 @@ describe("pending reference marker cleanup", () => {
     missingMarker.files.set(notePath, "# 笔记\n\n引用内容\n");
     await expect(cleanupOwnedPendingMarker(missingMarker, target, [target], []))
       .resolves.toEqual({ markerRemoved: false, reason: "already-absent" });
+  });
+
+  it("finds one plugin-owned marker after the source note was moved", async () => {
+    const vault = new MemoryVault();
+    vault.files.set("已移动/笔记.md", markdown);
+    const target = record("reference-1");
+
+    await expect(cleanupOwnedPendingMarker(vault, target, [target], []))
+      .resolves.toEqual({ markerRemoved: true, reason: "removed" });
+    expect(vault.files.get("已移动/笔记.md")).toBe("# 笔记\n\n引用内容\n");
+  });
+
+  it("refuses to guess when a stale source path matches multiple notes", async () => {
+    const vault = new MemoryVault();
+    vault.files.set("移动一/笔记.md", markdown);
+    vault.files.set("移动二/笔记.md", markdown);
+    const target = record("reference-1");
+
+    await expect(cleanupOwnedPendingMarker(vault, target, [target], []))
+      .rejects.toThrow(`Managed block marker is ambiguous: ${blockId}`);
+    expect(vault.writes).toBe(0);
   });
 
   it("never removes a pre-existing or still-shared block marker", async () => {
