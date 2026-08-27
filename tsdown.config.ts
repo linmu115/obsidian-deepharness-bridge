@@ -10,7 +10,7 @@ export default defineConfig({
   dts: false,
   sourcemap: true,
   deps: {
-    neverBundle: ["obsidian", "electron"],
+    neverBundle: ["obsidian", "electron", "@codemirror/state", "@codemirror/view"],
     alwaysBundle: ["zod", "dsh-annotation-core"],
     onlyBundle: ["zod", "dsh-annotation-core"],
   },

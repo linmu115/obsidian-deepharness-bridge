@@ -1,6 +1,6 @@
 {
   "name": "obsidian-deepharness-bridge",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "description": "Obsidian companion bridge for DeepSeek Harness conversations",
   "dshKnowledge": {
@@ -41,6 +41,7 @@
   "main": "main.js",
   "files": [
     "main.js",
+    "styles.css",
     "manifest.json",
     "versions.json",
     "README.md",
@@ -57,6 +58,8 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@codemirror/state": "6.5.0",
+    "@codemirror/view": "6.38.6",
     "@types/node": "^24.3.0",
     "dsh-annotation-core": "https://codeload.github.com/linmu115/dsh-annotation-core/tar.gz/99616f128d7beb175b023714ed906e976ac6f827",
     "obsidian": "^1.13.1",

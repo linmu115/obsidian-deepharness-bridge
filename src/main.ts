@@ -1,4 +1,4 @@
-import { MarkdownView, Menu, Notice, Plugin } from "obsidian";
+import { editorLivePreviewField, MarkdownView, Menu, Notice, Plugin } from "obsidian";
 
 import { startBridgeServer, type RunningBridge } from "./bridge/server.ts";
 import { OBSIDIAN_DEEPHARNESS_ACTION, obsidianProtocolUrl } from "./logical-link.ts";
@@ -28,6 +28,10 @@ import {
   type DeepHarnessBridgeSettings,
 } from "./settings.ts";
 import { DeepHarnessSettingTab, type BridgeSettingsOwner } from "./ui/settings-tab.ts";
+import {
+  compactRenderedDshBlockIds,
+  createDshBlockIdCompactExtension,
+} from "./ui/block-id-display.ts";
 import { ObsidianVaultAdapter } from "./vault/obsidian-adapter.ts";
 import { commitReferenceBacklink } from "./vault/references.ts";
 import { cleanupOwnedPendingMarker } from "./vault/pending-reference-cleanup.ts";
@@ -83,6 +87,11 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
     };
     this.data = { ...this.data, settings: this.settings };
     await this.persist();
+
+    this.registerEditorExtension(createDshBlockIdCompactExtension(editorLivePreviewField));
+    this.registerMarkdownPostProcessor((element) => {
+      compactRenderedDshBlockIds(element);
+    });
 
     const captureOptions = () => ({ vaultId: this.data.vaultId });
     registerEditorSelectionMenu(this, (selection) => this.queueReference(selection), captureOptions);
