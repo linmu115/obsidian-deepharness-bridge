@@ -18,6 +18,7 @@ function migrated(referenceId = "reference-1"): PendingReferenceRecord {
   });
   return {
     state: "migrated-ready",
+    blockIdOwnership: "pre-existing",
     capture,
     legacy: {
       citationId: referenceId,

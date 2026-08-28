@@ -3,5 +3,4 @@ dist/
 coverage/
 main.js
 main.js.map
-styles.css
 *.tgz

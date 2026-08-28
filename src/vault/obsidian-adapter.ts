@@ -41,6 +41,10 @@ export class ObsidianVaultAdapter implements VaultTextAdapter, VaultBacklinkAdap
     return this.app.vault.cachedRead(file);
   }
 
+  async listMarkdownPaths(): Promise<string[]> {
+    return this.app.vault.getMarkdownFiles().map((file) => file.path);
+  }
+
   async write(path: string, content: string): Promise<void> {
     const resolved = this.resolvePath(path);
     const existing = this.app.vault.getAbstractFileByPath(resolved);

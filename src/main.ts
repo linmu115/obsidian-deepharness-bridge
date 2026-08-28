@@ -1,4 +1,4 @@
-import { MarkdownView, Menu, Notice, Plugin } from "obsidian";
+import { editorLivePreviewField, MarkdownView, Menu, Notice, Plugin } from "obsidian";
 
 import { startBridgeServer, type RunningBridge } from "./bridge/server.ts";
 import { OBSIDIAN_DEEPHARNESS_ACTION, obsidianProtocolUrl } from "./logical-link.ts";
@@ -28,8 +28,13 @@ import {
   type DeepHarnessBridgeSettings,
 } from "./settings.ts";
 import { DeepHarnessSettingTab, type BridgeSettingsOwner } from "./ui/settings-tab.ts";
+import {
+  compactRenderedDshBlockIds,
+  createDshBlockIdCompactExtension,
+} from "./ui/block-id-display.ts";
 import { ObsidianVaultAdapter } from "./vault/obsidian-adapter.ts";
 import { commitReferenceBacklink } from "./vault/references.ts";
+import { cleanupOwnedPendingMarker } from "./vault/pending-reference-cleanup.ts";
 import { refreshObsidianReference } from "./vault/reference-source.ts";
 import { readSessionNote, saveSessionNote } from "./vault/session-notes.ts";
 import { listStickerBacklinks } from "./vault/sticker-backlinks.ts";
@@ -82,6 +87,11 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
     };
     this.data = { ...this.data, settings: this.settings };
     await this.persist();
+
+    this.registerEditorExtension(createDshBlockIdCompactExtension(editorLivePreviewField));
+    this.registerMarkdownPostProcessor((element) => {
+      compactRenderedDshBlockIds(element);
+    });
 
     const captureOptions = () => ({ vaultId: this.data.vaultId });
     registerEditorSelectionMenu(this, (selection) => this.queueReference(selection), captureOptions);
@@ -137,6 +147,14 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
   async discardReference(referenceId: string): Promise<void> {
     const discarded = discardPendingReference(this.data, referenceId);
     if (!discarded.changed) return;
+    if (discarded.record !== undefined && discarded.record.state !== "needs-reselect") {
+      await cleanupOwnedPendingMarker(
+        this.vaultAdapter(),
+        discarded.record,
+        this.data.pendingReferences,
+        this.data.backlinkReceipts,
+      );
+    }
     this.data = discarded.data;
     await this.persist();
   }
@@ -165,7 +183,11 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
 
   private async queueReference(selection: NoteSelection): Promise<void> {
     await ensureDshWebViewer(this.app, this.settings.dshOrigin);
-    const { requiresBlockIdWrite: _uiOnly, ...rawCapture } = selection;
+    const {
+      requiresBlockIdWrite: _requiresBlockIdWrite,
+      blockIdOwnership,
+      ...rawCapture
+    } = selection;
     const capture = ObsidianReferenceCaptureV2Schema.parse(rawCapture);
     const existing = this.data.pendingReferences.find((record) => captureOf(record)?.referenceId === capture.referenceId);
     if (existing !== undefined) {
@@ -175,10 +197,13 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
       if (existing.state === "queued") this.bridge?.enqueue(capture);
       return;
     }
-    this.data = { ...this.data, pendingReferences: [...this.data.pendingReferences, { state: "queued", capture }] };
+    this.data = {
+      ...this.data,
+      pendingReferences: [...this.data.pendingReferences, { state: "queued", capture, blockIdOwnership }],
+    };
     await this.persist();
     this.bridge?.enqueue(capture);
-    new Notice("已引用到 DSH");
+    new Notice("引用已提交，等待 DSH 接收");
   }
 
   private findCapture(referenceId: string): { index: number; record: Exclude<PendingReferenceRecord, { state: "needs-reselect" }> } {
@@ -200,9 +225,15 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
       return;
     }
     const pendingReferences = [...this.data.pendingReferences];
-    pendingReferences[index] = { state: "claimed", capture: record.capture, claim };
+    pendingReferences[index] = {
+      state: "claimed",
+      capture: record.capture,
+      claim,
+      blockIdOwnership: record.blockIdOwnership,
+    };
     this.data = { ...this.data, pendingReferences };
     await this.persist();
+    new Notice("引用已加入 DSH 会话");
   }
 
   private async refreshReference(request: ReferenceRefreshRequestV2): Promise<ReferenceRefreshResultV2> {
@@ -214,10 +245,24 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
     if (result.kind === "refreshed") {
       const pendingReferences = [...this.data.pendingReferences];
       pendingReferences[index] = record.state === "claimed"
-        ? { state: "claimed", capture: { ...record.capture, source: result.source }, claim: record.claim }
+        ? {
+            state: "claimed",
+            capture: { ...record.capture, source: result.source },
+            claim: record.claim,
+            blockIdOwnership: record.blockIdOwnership,
+          }
         : record.state === "migrated-ready"
-          ? { state: "migrated-ready", capture: { ...record.capture, source: result.source }, legacy: record.legacy }
-          : { state: "queued", capture: { ...record.capture, source: result.source } };
+          ? {
+              state: "migrated-ready",
+              capture: { ...record.capture, source: result.source },
+              legacy: record.legacy,
+              blockIdOwnership: record.blockIdOwnership,
+            }
+          : {
+              state: "queued",
+              capture: { ...record.capture, source: result.source },
+              blockIdOwnership: record.blockIdOwnership,
+            };
       this.data = { ...this.data, pendingReferences };
       await this.persist();
     }

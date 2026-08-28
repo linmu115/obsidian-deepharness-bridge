@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { DEFAULT_SETTINGS } from "../src/settings.ts";
 import {
+  discardPendingReference,
   migrateStoredPluginData,
   releaseMigratedReference,
   type MigrationVaultReader,
@@ -80,6 +81,7 @@ describe("v1 pending citation migration", () => {
       pendingReferences: released.pendingReferences.map((record) => record.state === "queued" ? {
         state: "claimed" as const,
         capture: record.capture,
+        blockIdOwnership: record.blockIdOwnership,
         claim: {
           annotationProtocolVersion: 2,
           type: "reference-claim" as const,
@@ -92,5 +94,27 @@ describe("v1 pending citation migration", () => {
     };
     expect((await migrateStoredPluginData(released, options(new MemoryVault()))).pendingReferences[0]?.state).toBe("queued");
     expect((await migrateStoredPluginData(claimed, options(new MemoryVault()))).pendingReferences[0]?.state).toBe("claimed");
+  });
+
+  it("backfills marker ownership for existing v2 records and returns the discarded record", async () => {
+    const base = await migrateStoredPluginData({ pendingCitations: [legacy] }, options(new MemoryVault(new Map([[notePath, markdown]]))));
+    const released = releaseMigratedReference(base, legacy.citationId).data;
+    const raw = structuredClone(released) as StoredPluginDataV2;
+    const queued = raw.pendingReferences[0];
+    if (queued?.state === "queued") {
+      queued.capture.source.locator.blockId = "dsh-note-1234abcd";
+      delete (queued as { blockIdOwnership?: unknown }).blockIdOwnership;
+    }
+
+    const validated = await migrateStoredPluginData(raw, options(new MemoryVault()));
+    expect(validated.pendingReferences[0]).toMatchObject({ blockIdOwnership: "plugin-created" });
+
+    const discarded = discardPendingReference(validated, legacy.citationId);
+    expect(discarded.changed).toBe(true);
+    expect(discarded.record).toMatchObject({
+      blockIdOwnership: "plugin-created",
+      capture: { referenceId: legacy.citationId },
+    });
+    expect(discarded.data.pendingReferences).toEqual([]);
   });
 });
