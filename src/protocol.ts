@@ -8,6 +8,8 @@ export {
   ObsidianReferenceCaptureV2Schema,
   ReferenceClaimV2Schema,
   ReferenceDiscardV2Schema,
+  ReferenceDeleteCommitV2Schema,
+  ReferenceDeleteRequestV2Schema,
   ReferenceRefreshRequestV2Schema,
   ReferenceRefreshResultV2Schema,
   backlinkCommitDigest,
@@ -23,6 +25,8 @@ export type {
   ObsidianReferenceCaptureV2,
   ReferenceClaimV2,
   ReferenceDiscardV2,
+  ReferenceDeleteCommitV2,
+  ReferenceDeleteRequestV2,
   ReferenceRefreshRequestV2,
   ReferenceRefreshResultV2,
 } from "dsh-annotation-core/protocol";
@@ -53,6 +57,8 @@ export const deepLinkActionSchema = z.object({
   sessionId: z.string().min(1),
   anchorId: z.string().min(1),
   quoteHash: z.string().optional(),
+  setId: z.string().min(1).optional(),
+  referenceId: z.string().min(1).optional(),
 });
 
 export const openNoteActionSchema = z.object({

@@ -16,6 +16,8 @@ import {
   type ObsidianReferenceCaptureV2,
   type ReferenceClaimV2,
   type ReferenceDiscardV2,
+  type ReferenceDeleteCommitV2,
+  type ReferenceDeleteRequestV2,
   type ReferenceRefreshRequestV2,
   type ReferenceRefreshResultV2,
 } from "./protocol.ts";
@@ -33,13 +35,14 @@ import {
   createDshBlockIdCompactExtension,
 } from "./ui/block-id-display.ts";
 import { ObsidianVaultAdapter } from "./vault/obsidian-adapter.ts";
-import { commitReferenceBacklink } from "./vault/references.ts";
+import { commitReferenceBacklink, deleteCommittedReferenceBacklink } from "./vault/references.ts";
 import { cleanupOwnedPendingMarker } from "./vault/pending-reference-cleanup.ts";
 import { refreshObsidianReference } from "./vault/reference-source.ts";
 import { readSessionNote, saveSessionNote } from "./vault/session-notes.ts";
 import { listStickerBacklinks } from "./vault/sticker-backlinks.ts";
 import { ensureDshWebViewer } from "./webviewer/adapter.ts";
 import { handleDshUrl, registerDshLinkInterceptor } from "./webviewer/deep-link.ts";
+import { resolveDshViewerUrl } from "./webviewer/launch-url.ts";
 import { ObsidianMainMarkdownWorkspace } from "./workspace/obsidian-adapter.ts";
 import { openNoteInMainMarkdownLeaf } from "./workspace/open-note.ts";
 
@@ -61,6 +64,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
     settings: { ...DEFAULT_SETTINGS },
     pendingReferences: [],
     backlinkReceipts: [],
+    referenceDeleteRequests: [],
   };
 
   get pendingReferences(): readonly PendingReferenceRecord[] { return this.data.pendingReferences; }
@@ -83,14 +87,16 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
       ...DEFAULT_SETTINGS,
       ...this.data.settings,
       dshOrigin: normalizeLoopbackOrigin(this.data.settings.dshOrigin),
+      dshLaunchLogPath: this.data.settings.dshLaunchLogPath?.trim() ?? "",
       bridgePort: validateBridgePort(this.data.settings.bridgePort),
     };
     this.data = { ...this.data, settings: this.settings };
     await this.persist();
 
-    this.registerEditorExtension(createDshBlockIdCompactExtension(editorLivePreviewField));
+    const deleteFromMarker = (marker: string) => { void this.deleteReferencesForMarker(marker); };
+    this.registerEditorExtension(createDshBlockIdCompactExtension(editorLivePreviewField, deleteFromMarker));
     this.registerMarkdownPostProcessor((element) => {
-      compactRenderedDshBlockIds(element);
+      compactRenderedDshBlockIds(element, deleteFromMarker);
     });
 
     const captureOptions = () => ({ vaultId: this.data.vaultId });
@@ -103,7 +109,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
     });
     registerDshLinkInterceptor(this, {
       app: this.app,
-      dshUrl: () => this.settings.dshOrigin,
+      dshUrl: () => resolveDshViewerUrl(this.settings),
       enqueue: (action) => this.bridge?.enqueue(action),
       onError: (error) => new Notice(error instanceof Error ? error.message : String(error)),
     });
@@ -113,7 +119,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
       catch (error) { new Notice(error instanceof Error ? error.message : String(error)); return; }
       void handleDshUrl(value, {
         app: this.app,
-        dshUrl: () => this.settings.dshOrigin,
+        dshUrl: () => resolveDshViewerUrl(this.settings),
         enqueue: (action) => this.bridge?.enqueue(action),
       }).catch((error: unknown) => new Notice(error instanceof Error ? error.message : String(error)));
     });
@@ -155,7 +161,10 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
         this.data.backlinkReceipts,
       );
     }
-    this.data = discarded.data;
+    this.data = {
+      ...discarded.data,
+      referenceDeleteRequests: discarded.data.referenceDeleteRequests.filter((request) => request.referenceId !== referenceId),
+    };
     await this.persist();
   }
 
@@ -182,7 +191,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
   }
 
   private async queueReference(selection: NoteSelection): Promise<void> {
-    await ensureDshWebViewer(this.app, this.settings.dshOrigin);
+    await ensureDshWebViewer(this.app, await resolveDshViewerUrl(this.settings));
     const {
       requiresBlockIdWrite: _requiresBlockIdWrite,
       blockIdOwnership,
@@ -280,6 +289,63 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
     return receipt;
   }
 
+  private async deleteReferencesForMarker(rawMarker: string): Promise<void> {
+    const blockId = rawMarker.replace(/^\^/, "");
+    const records = this.data.pendingReferences.filter((record): record is Exclude<PendingReferenceRecord, { state: "needs-reselect" }> => (
+      record.state !== "needs-reselect" && record.capture.source.locator.blockId === blockId
+    ));
+    if (records.length === 0) {
+      new Notice("这个 DSH 引用已没有活动的双向关系");
+      return;
+    }
+    const label = records.length === 1 ? "这条 DSH 双向引用" : `这个块关联的 ${records.length} 条 DSH 双向引用`;
+    if (!globalThis.confirm(`删除${label}？已发送的 DSH 历史消息不会被改写。`)) return;
+
+    for (const record of records.filter((candidate) => candidate.state !== "claimed")) {
+      await this.discardReference(record.capture.referenceId);
+    }
+    const claimed = records.filter((record): record is Extract<PendingReferenceRecord, { state: "claimed" }> => record.state === "claimed");
+    if (claimed.length === 0) {
+      new Notice("DSH 引用已删除");
+      return;
+    }
+    const requests = [...this.data.referenceDeleteRequests];
+    for (const record of claimed) {
+      if (requests.some((request) => request.referenceId === record.capture.referenceId)) continue;
+      requests.push({
+        annotationProtocolVersion: 2,
+        type: "reference-delete-request",
+        actionId: crypto.randomUUID(),
+        referenceId: record.capture.referenceId,
+        profileId: record.claim.profileId,
+        sessionId: record.claim.sessionId,
+        setId: record.claim.setId,
+        requestedAt: Date.now(),
+      });
+    }
+    this.data = { ...this.data, referenceDeleteRequests: requests };
+    await this.persist();
+    for (const request of requests) {
+      if (claimed.some((record) => record.capture.referenceId === request.referenceId)) this.bridge?.enqueue(request);
+    }
+    new Notice("删除请求已提交，等待 DSH 同步");
+  }
+
+  private async deleteCommittedReference(commit: ReferenceDeleteCommitV2): Promise<void> {
+    const target = this.data.pendingReferences.find((record) => captureOf(record)?.referenceId === commit.referenceId);
+    const receipt = this.data.backlinkReceipts.find((candidate) => candidate.referenceId === commit.referenceId);
+    await deleteCommittedReferenceBacklink(this.vaultAdapter(), commit, receipt?.notePath);
+    const pendingReferences = this.data.pendingReferences.filter((record) => captureOf(record)?.referenceId !== commit.referenceId);
+    const backlinkReceipts = this.data.backlinkReceipts.filter((candidate) => candidate.referenceId !== commit.referenceId);
+    const referenceDeleteRequests = this.data.referenceDeleteRequests.filter((request) => request.referenceId !== commit.referenceId);
+    if (target !== undefined && target.state !== "needs-reselect") {
+      await cleanupOwnedPendingMarker(this.vaultAdapter(), target, pendingReferences, backlinkReceipts);
+    }
+    this.data = { ...this.data, pendingReferences, backlinkReceipts, referenceDeleteRequests };
+    await this.persist();
+    new Notice("DSH 双向引用已删除");
+  }
+
   private async startBridge(): Promise<void> {
     const vault = this.vaultAdapter();
     try {
@@ -290,6 +356,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
         onRefreshReference: (request) => this.refreshReference(request),
         onDiscardReference: async (request: ReferenceDiscardV2) => { await this.discardReference(request.referenceId); },
         onCommitBacklink: (commit) => this.commitBacklink(commit),
+        onDeleteCommittedReference: (commit) => this.deleteCommittedReference(commit),
         onOpenNote: async (action) => {
           await openNoteInMainMarkdownLeaf(new ObsidianMainMarkdownWorkspace(this.app), action);
         },
@@ -300,6 +367,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
       for (const record of this.data.pendingReferences) {
         if (record.state === "queued") this.bridge.enqueue(record.capture);
       }
+      for (const request of this.data.referenceDeleteRequests) this.bridge.enqueue(request as ReferenceDeleteRequestV2);
       this.bridgeStatus = `已连接 ${this.bridge.origin}`;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

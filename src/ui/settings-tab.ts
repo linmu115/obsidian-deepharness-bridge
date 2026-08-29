@@ -34,6 +34,16 @@ export class DeepHarnessSettingTab extends PluginSettingTab {
         }));
 
     new Setting(containerEl)
+      .setName("DSH 启动日志")
+      .setDesc("可选。DSH 开启 Web 登录令牌时，填写包含“dsh web:”启动地址的日志文件；每次打开引用都会读取最新地址。")
+      .addText((text) => text
+        .setPlaceholder("例如 D:\\AI\\DeepSeek-Harness\\logs\\official-dsh.stdout.log")
+        .setValue(this.owner.settings.dshLaunchLogPath)
+        .onChange(async (value) => {
+          await this.owner.updateSettings({ dshLaunchLogPath: value.trim() });
+        }));
+
+    new Setting(containerEl)
       .setName("Bridge 端口")
       .addText((text) => text
         .setValue(String(this.owner.settings.bridgePort))

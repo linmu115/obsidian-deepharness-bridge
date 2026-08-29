@@ -53,6 +53,16 @@ describe("Obsidian DSH Web Viewer adapter", () => {
     expect(action).not.toHaveProperty("stickerId");
   });
 
+  it("preserves the annotation identity needed to open the exact DSH reference", async () => {
+    const { app } = appWith([fakeLeaf("http://127.0.0.1:51882/")]);
+    const action = await handleDshUrl(
+      "obsidian://deepharness?session=session-demo&anchor=user-node-42&setId=set-1&referenceId=reference-1",
+      { app, dshUrl: "http://127.0.0.1:51882/", enqueue: vi.fn() },
+    );
+
+    expect(action).toMatchObject({ setId: "set-1", referenceId: "reference-1" });
+  });
+
   it("reuses an existing loopback DSH webviewer leaf", async () => {
     const existing = fakeLeaf("http://127.0.0.1:51882/");
     const { app } = appWith([existing]);
@@ -60,6 +70,23 @@ describe("Obsidian DSH Web Viewer adapter", () => {
 
     expect(leaf).toBe(existing);
     expect(app.workspace.getLeaf).not.toHaveBeenCalled();
+    expect(app.workspace.revealLeaf).toHaveBeenCalledWith(existing);
+  });
+
+  it("reauthenticates an existing Web Viewer with the current DSH launch URL", async () => {
+    const existing = fakeLeaf("http://127.0.0.1:51882/");
+    const { app } = appWith([existing]);
+
+    await ensureDshWebViewer(app, "http://127.0.0.1:51882/?token=current-token");
+
+    expect(existing.setViewState).toHaveBeenCalledWith({
+      type: "webviewer",
+      active: true,
+      state: {
+        url: "http://127.0.0.1:51882/?token=current-token",
+        title: "DeepSeek Harness",
+      },
+    });
     expect(app.workspace.revealLeaf).toHaveBeenCalledWith(existing);
   });
 

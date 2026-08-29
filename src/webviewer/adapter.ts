@@ -46,6 +46,14 @@ export async function ensureDshWebViewer(app: WebViewerApp, dshUrl: string): Pro
     }
   });
   if (existing) {
+    const state = leafState(existing);
+    if (target.search && state.url && new URL(state.url).href !== target.href) {
+      await existing.setViewState({
+        type: "webviewer",
+        active: true,
+        state: { url: target.href, title: "DeepSeek Harness" },
+      });
+    }
     app.workspace.revealLeaf(existing);
     return existing;
   }

@@ -10,6 +10,8 @@ import {
   ObsidianReferenceCaptureV2Schema,
   ReferenceClaimV2Schema,
   ReferenceDiscardV2Schema,
+  ReferenceDeleteCommitV2Schema,
+  ReferenceDeleteRequestV2Schema,
   ReferenceRefreshRequestV2Schema,
   ReferenceRefreshResultV2Schema,
   STICKER_PROTOCOL_VERSION,
@@ -24,6 +26,7 @@ import {
   type BacklinkReceiptV2,
   type ReferenceClaimV2,
   type ReferenceDiscardV2,
+  type ReferenceDeleteCommitV2,
   type ReferenceRefreshRequestV2,
   type ReferenceRefreshResultV2,
   type SessionNoteDocument,
@@ -66,6 +69,7 @@ export interface BridgeServerOptions {
   onRefreshReference?: (request: ReferenceRefreshRequestV2) => Promise<ReferenceRefreshResultV2>;
   onDiscardReference?: (request: ReferenceDiscardV2) => Promise<void>;
   onCommitBacklink?: (commit: BacklinkCommitV2) => Promise<BacklinkReceiptV2>;
+  onDeleteCommittedReference?: (commit: ReferenceDeleteCommitV2) => Promise<void>;
 }
 
 export interface RunningBridge {
@@ -199,7 +203,7 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
           stickerProtocolVersion: STICKER_PROTOCOL_VERSION,
           bridgeOrigin: listeningOrigin,
           status: "ok",
-          capabilities: ["reference-capture-v2", "reference-refresh", "backlink-commit-v2"],
+          capabilities: ["reference-capture-v2", "reference-refresh", "backlink-commit-v2", "reference-delete-v2"],
         }, allowedOrigin);
         return;
       }
@@ -218,7 +222,7 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
           annotationProtocolVersion: ANNOTATION_PROTOCOL_VERSION,
           stickerProtocolVersion: STICKER_PROTOCOL_VERSION,
           bridgeOrigin: listeningOrigin,
-          capabilities: ["reference-capture-v2", "reference-refresh", "backlink-commit-v2"],
+          capabilities: ["reference-capture-v2", "reference-refresh", "backlink-commit-v2", "reference-delete-v2"],
           clientId: input.clientId,
           token,
           expiresAt,
@@ -300,6 +304,17 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
         const result = await options.onCommitBacklink?.(input);
         if (result === undefined) throw new HttpError(501, "Backlink commit is unavailable");
         json(response, 200, result, allowedOrigin);
+        return;
+      }
+
+      const deleteCommitMatch = /^\/v2\/references\/([^/]+)\/delete-commit$/.exec(requestUrl.pathname);
+      if (request.method === "POST" && deleteCommitMatch) {
+        const referenceId = decodeURIComponent(deleteCommitMatch[1] ?? "");
+        const input = ReferenceDeleteCommitV2Schema.parse(await readJsonBody(request, maxBodyBytes));
+        if (input.referenceId !== referenceId) throw new HttpError(400, "Reference ID does not match request path");
+        if (options.onDeleteCommittedReference === undefined) throw new HttpError(501, "Reference deletion is unavailable");
+        await options.onDeleteCommittedReference(input);
+        json(response, 200, { deleted: true, referenceId }, allowedOrigin);
         return;
       }
 
@@ -390,8 +405,9 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
     },
     enqueue(message) {
       if (message.type === "reference-capture") return queue.enqueue(ObsidianReferenceCaptureV2Schema.parse(message));
+      if (message.type === "reference-delete-request") return queue.enqueue(ReferenceDeleteRequestV2Schema.parse(message));
       const legacy = parseBridgeMessage(message);
-      if (legacy.type !== "deep-link") throw new TypeError("Only deep links and v2 reference captures are queueable");
+      if (legacy.type !== "deep-link") throw new TypeError("Only deep links, reference captures and reference deletions are queueable");
       return queue.enqueue(legacy as QueuedBridgeMessage);
     },
     async close() {

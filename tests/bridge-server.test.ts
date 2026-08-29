@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { startBridgeServer, type RunningBridge } from "../src/bridge/server.ts";
-import type { BacklinkCommitV2, DeepLinkAction } from "../src/protocol.ts";
+import type { BacklinkCommitV2, DeepLinkAction, ReferenceDeleteCommitV2, ReferenceDeleteRequestV2 } from "../src/protocol.ts";
 import { createObsidianReferenceCapture } from "../src/vault/reference-source.ts";
 
 const DSH_ORIGIN = "http://127.0.0.1:51882";
@@ -48,7 +48,9 @@ async function handshakeV2(bridge: RunningBridge, clientId = "dsh-web-v2"): Prom
   expect(response.status).toBe(200);
   const body = await response.json() as { token: string; annotationProtocolVersion: number; capabilities: string[] };
   expect(body).toMatchObject({ annotationProtocolVersion: 2 });
-  expect(body.capabilities).toEqual(expect.arrayContaining(["reference-capture-v2", "reference-refresh", "backlink-commit-v2"]));
+  expect(body.capabilities).toEqual(expect.arrayContaining([
+    "reference-capture-v2", "reference-refresh", "backlink-commit-v2", "reference-delete-v2",
+  ]));
   return body.token;
 }
 
@@ -320,6 +322,33 @@ describe("loopback bridge server", () => {
     expect(conflict.status).toBe(409);
   });
 
+  it("queues and acknowledges a durable reference deletion request", async () => {
+    const bridge = await start();
+    const deletion: ReferenceDeleteRequestV2 = {
+      annotationProtocolVersion: 2,
+      type: "reference-delete-request",
+      actionId: "delete-action-1",
+      referenceId: "reference-v2",
+      profileId: "web",
+      sessionId: "session-1",
+      setId: "set-1",
+      requestedAt: 100,
+    };
+    bridge.enqueue(deletion);
+    const token = await handshakeV2(bridge);
+    const pending = await request(bridge, "/v2/actions/pending?after=0", { headers: authorized(token) });
+    expect(await pending.json()).toMatchObject({ actions: [{ cursor: 1, message: deletion }] });
+
+    const ack = await request(bridge, `/v1/actions/${deletion.actionId}/ack`, {
+      method: "POST",
+      headers: authorized(token, { "content-type": "application/json" }),
+      body: "{}",
+    });
+    expect(ack.status).toBe(200);
+    const afterAck = await request(bridge, "/v2/actions/pending?after=0", { headers: authorized(token) });
+    expect(await afterAck.json()).toMatchObject({ actions: [] });
+  });
+
   it("serves refresh, discard, backlink commit and open-note v2 routes", async () => {
     const onRefreshReference = vi.fn(async () => ({ kind: "offline" as const }));
     const onDiscardReference = vi.fn(async () => undefined);
@@ -327,8 +356,11 @@ describe("loopback bridge server", () => {
       referenceId: "reference-v2", commitDigest: "sha256:30101ebf30101ebf30101ebf30101ebf30101ebf30101ebf30101ebf30101ebf",
       notePath: "note.md", blockId: "dsh-ref-reference", revision: "sha256:new", writtenAt: 100,
     }));
+    const onDeleteCommittedReference = vi.fn(async () => undefined);
     const onOpenNote = vi.fn(async () => undefined);
-    const bridge = await start({ onRefreshReference, onDiscardReference, onCommitBacklink, onOpenNote });
+    const bridge = await start({
+      onRefreshReference, onDiscardReference, onCommitBacklink, onDeleteCommittedReference, onOpenNote,
+    });
     const token = await handshakeV2(bridge);
     const jsonHeaders = authorized(token, { "content-type": "application/json" });
 
@@ -350,6 +382,13 @@ describe("loopback bridge server", () => {
       userTextHash: "sha256:30101ebf30101ebf30101ebf30101ebf30101ebf30101ebf30101ebf30101ebf",
     };
     expect((await request(bridge, "/v2/backlinks/commit", { method: "POST", headers: jsonHeaders, body: JSON.stringify(commit) })).status).toBe(200);
+    const deletion: ReferenceDeleteCommitV2 = {
+      annotationProtocolVersion: 2, type: "reference-delete-commit", referenceId: "reference-v2",
+      profileId: "web", sessionId: "session-1", setId: "set-1", deletedAt: 200,
+    };
+    expect((await request(bridge, "/v2/references/reference-v2/delete-commit", {
+      method: "POST", headers: jsonHeaders, body: JSON.stringify(deletion),
+    })).status).toBe(200);
     expect((await request(bridge, "/v2/obsidian/open-note", {
       method: "POST", headers: jsonHeaders,
       body: JSON.stringify({ protocolVersion: 1, type: "open-note", actionId: "00000000-0000-4000-8000-000000000001", notePath: "note.md", blockId: "block-1" }),
@@ -357,6 +396,7 @@ describe("loopback bridge server", () => {
     expect(onRefreshReference).toHaveBeenCalledOnce();
     expect(onDiscardReference).toHaveBeenCalledOnce();
     expect(onCommitBacklink).toHaveBeenCalledOnce();
+    expect(onDeleteCommittedReference).toHaveBeenCalledWith(deletion);
     expect(onOpenNote).toHaveBeenCalledOnce();
   });
 

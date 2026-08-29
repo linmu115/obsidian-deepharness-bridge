@@ -4,6 +4,7 @@ import {
   type BacklinkCommitV2,
   type BacklinkReceiptV2,
   type ObsidianReferenceCaptureV2,
+  type ReferenceDeleteCommitV2,
   type PendingCitation,
   type ResolvedCitation,
 } from "../protocol.ts";
@@ -62,6 +63,10 @@ export interface ReferenceVaultProcessAdapter extends VaultTextAdapter {
   process(path: string, update: (content: string) => string): Promise<string>;
 }
 
+export interface ReferenceDeleteVaultAdapter extends ReferenceVaultProcessAdapter {
+  listMarkdownPaths(): Promise<string[]>;
+}
+
 export class ReferenceDocumentError extends Error {
   constructor(readonly code: "REVISION_CONFLICT" | "CORRUPT_MARKER" | "NOTE_NOT_FOUND" | "IDEMPOTENCY_CONFLICT", message: string) {
     super(message);
@@ -106,6 +111,65 @@ function findV2Reference(source: string, referenceId: string): ReferenceMetadata
   const ends = source.match(/<!-- \/dsh-reference -->/g)?.length ?? 0;
   if (starts !== ends) throw new ReferenceDocumentError("CORRUPT_MARKER", "A dsh-reference marker is incomplete");
   return null;
+}
+
+function findV2ReferenceBlock(
+  source: string,
+  referenceId: string,
+): { start: number; end: number; metadata: ReferenceMetadataV2 } | null {
+  REFERENCE_BLOCK.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = REFERENCE_BLOCK.exec(source)) !== null) {
+    const metadata = parseV2Metadata(match[1] ?? "");
+    if (metadata?.referenceId === referenceId) {
+      return { start: match.index, end: match.index + match[0].length, metadata };
+    }
+  }
+  const starts = source.match(/<!-- dsh-reference:/g)?.length ?? 0;
+  const ends = source.match(/<!-- \/dsh-reference -->/g)?.length ?? 0;
+  if (starts !== ends) throw new ReferenceDocumentError("CORRUPT_MARKER", "A dsh-reference marker is incomplete");
+  return null;
+}
+
+export async function deleteCommittedReferenceBacklink(
+  vault: ReferenceDeleteVaultAdapter,
+  commit: ReferenceDeleteCommitV2,
+  recordedNotePath?: string,
+): Promise<{ removed: boolean; notePath?: string; blockId?: string }> {
+  const orderedPaths = [
+    ...(recordedNotePath ? [recordedNotePath] : []),
+    ...(await vault.listMarkdownPaths()).filter((path) => path !== recordedNotePath),
+  ];
+  let found: { path: string; metadata: ReferenceMetadataV2 } | undefined;
+  for (const path of orderedPaths) {
+    const source = await vault.read(path);
+    if (source === null) continue;
+    const block = findV2ReferenceBlock(source, commit.referenceId);
+    if (block === null) continue;
+    if (found !== undefined) throw new ReferenceDocumentError("IDEMPOTENCY_CONFLICT", "The committed reference block is ambiguous");
+    if (
+      block.metadata.setId !== commit.setId || block.metadata.profileId !== commit.profileId
+      || block.metadata.sessionId !== commit.sessionId
+    ) throw new ReferenceDocumentError("IDEMPOTENCY_CONFLICT", "The committed reference block belongs to a different DSH relation");
+    found = { path, metadata: block.metadata };
+  }
+  if (found === undefined) return { removed: false };
+
+  let removed = false;
+  await vault.process(found.path, (source) => {
+    const block = findV2ReferenceBlock(source, commit.referenceId);
+    if (block === null) return source;
+    if (
+      block.metadata.setId !== commit.setId || block.metadata.profileId !== commit.profileId
+      || block.metadata.sessionId !== commit.sessionId
+    ) throw new ReferenceDocumentError("IDEMPOTENCY_CONFLICT", "The committed reference block changed before deletion");
+    removed = true;
+    let end = block.end;
+    if (source.slice(end, end + 2) === "\r\n") end += 2;
+    else if (source[end] === "\n") end += 1;
+    return `${source.slice(0, block.start)}${source.slice(end)}`;
+  });
+  return { removed, notePath: found.path, blockId: found.metadata.blockId };
 }
 
 function renderV2Reference(

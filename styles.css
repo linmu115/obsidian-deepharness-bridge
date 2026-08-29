@@ -27,3 +27,25 @@
   border-color: var(--interactive-accent);
   color: var(--text-normal);
 }
+
+.dsh-block-id-delete {
+  display: inline-grid;
+  place-items: center;
+  width: 1.25em;
+  height: 1.25em;
+  margin: 0 -0.28em 0 0.05em;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-faint);
+  font: inherit;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.dsh-block-id-delete:hover,
+.dsh-block-id-delete:focus-visible {
+  background: var(--background-modifier-error-hover);
+  color: var(--text-error);
+}

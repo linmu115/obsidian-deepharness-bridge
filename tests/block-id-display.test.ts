@@ -1,7 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { JSDOM } from "jsdom";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   collectCompactDshBlockIds,
+  compactRenderedDshBlockIds,
   shouldCompactDshBlockIds,
 } from "../src/ui/block-id-display.ts";
 
@@ -37,5 +39,23 @@ describe("compact DSH block ID display", () => {
   it("keeps source mode raw and compacts only live preview", () => {
     expect(shouldCompactDshBlockIds(false)).toBe(false);
     expect(shouldCompactDshBlockIds(true)).toBe(true);
+  });
+
+  it("renders a delete control that targets the exact generated marker", () => {
+    const dom = new JSDOM('<div id="root">被引用的段落。 ^dsh-note-01234567</div>');
+    const previous = globalThis.NodeFilter;
+    Object.assign(globalThis, { NodeFilter: dom.window.NodeFilter });
+    try {
+      const root = dom.window.document.querySelector<HTMLElement>("#root");
+      const onDelete = vi.fn();
+      expect(root).not.toBeNull();
+      expect(compactRenderedDshBlockIds(root as HTMLElement, onDelete)).toBe(1);
+      const button = root?.querySelector<HTMLButtonElement>(".dsh-block-id-delete");
+      expect(button?.getAttribute("aria-label")).toBe("删除 DSH 引用");
+      button?.click();
+      expect(onDelete).toHaveBeenCalledWith("^dsh-note-01234567");
+    } finally {
+      Object.assign(globalThis, { NodeFilter: previous });
+    }
   });
 });
