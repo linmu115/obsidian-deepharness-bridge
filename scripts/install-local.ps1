@@ -12,12 +12,22 @@ $configRoot = Join-Path $vaultRoot '.obsidian'
 $pluginsRoot = Join-Path $configRoot 'plugins'
 $targetRoot = Join-Path $pluginsRoot $pluginId
 $backupRoot = Join-Path $configRoot 'plugin-backups'
+$deploymentFiles = @(
+  'main.js',
+  'manifest.json',
+  'styles.css',
+  'versions.json',
+  'package.json',
+  'README.md',
+  'LICENSE',
+  'scripts/install-local.ps1'
+)
 
 if (-not (Test-Path -LiteralPath $configRoot -PathType Container)) {
   throw "Obsidian configuration directory was not found: $configRoot"
 }
 
-foreach ($name in @('main.js', 'manifest.json', 'styles.css', 'versions.json')) {
+foreach ($name in $deploymentFiles) {
   $artifact = Join-Path $sourceRoot $name
   if (-not (Test-Path -LiteralPath $artifact -PathType Leaf)) {
     throw "Build artifact was not found: $artifact"
@@ -44,8 +54,13 @@ if (Test-Path -LiteralPath $targetRoot -PathType Container) {
   New-Item -ItemType Directory -Path $targetRoot | Out-Null
 }
 
-foreach ($name in @('main.js', 'manifest.json', 'styles.css', 'versions.json')) {
-  Copy-Item -LiteralPath (Join-Path $sourceRoot $name) -Destination (Join-Path $targetRoot $name) -Force
+foreach ($name in $deploymentFiles) {
+  $target = Join-Path $targetRoot $name
+  $targetParent = Split-Path -Parent $target
+  if (-not (Test-Path -LiteralPath $targetParent -PathType Container)) {
+    New-Item -ItemType Directory -Path $targetParent -Force | Out-Null
+  }
+  Copy-Item -LiteralPath (Join-Path $sourceRoot $name) -Destination $target -Force
 }
 
 $installed = Get-Content -LiteralPath (Join-Path $targetRoot 'manifest.json') -Raw | ConvertFrom-Json
