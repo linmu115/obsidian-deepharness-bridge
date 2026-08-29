@@ -115,21 +115,13 @@ describe("Obsidian DSH Web Viewer adapter", () => {
     expect(app.workspace.revealLeaf).toHaveBeenCalledWith(existing);
   });
 
-  it("reauthenticates an existing Web Viewer with the current DSH launch URL", async () => {
+  it("does not renavigate an already running Web Viewer merely to replay its launch token", async () => {
     const existing = fakeLeaf("http://127.0.0.1:51882/");
     const { app } = appWith([existing]);
 
     await ensureDshWebViewer(app, "http://127.0.0.1:51882/?token=current-token");
 
-    expect(existing.setViewState).toHaveBeenCalledWith({
-      type: "webviewer",
-      active: true,
-      state: {
-        url: "http://127.0.0.1:51882/?token=current-token",
-        title: "DeepSeek Harness",
-        mode: "webview",
-      },
-    });
+    expect(existing.setViewState).not.toHaveBeenCalled();
     expect(app.workspace.revealLeaf).toHaveBeenCalledWith(existing);
   });
 
@@ -152,15 +144,7 @@ describe("Obsidian DSH Web Viewer adapter", () => {
     await ensureDshWebViewer(app, "http://127.0.0.1:51882/?token=current-token");
 
     expect(app.workspace.getLeaf).not.toHaveBeenCalled();
-    expect(existing.setViewState).toHaveBeenCalledWith({
-      type: "webviewer",
-      active: true,
-      state: {
-        url: "http://127.0.0.1:51882/?token=current-token",
-        title: "DeepSeek Harness",
-        mode: "webview",
-      },
-    });
+    expect(existing.setViewState).not.toHaveBeenCalled();
     expect(app.workspace.revealLeaf).toHaveBeenCalledWith(existing);
   });
 
@@ -193,15 +177,7 @@ describe("Obsidian DSH Web Viewer adapter", () => {
     await ensureDshWebViewer(app, "http://127.0.0.1:51882/?token=current-token");
 
     expect(blank.setViewState).not.toHaveBeenCalled();
-    expect(ready.setViewState).toHaveBeenCalledWith({
-      type: "webviewer",
-      active: true,
-      state: {
-        url: "http://127.0.0.1:51882/?token=current-token",
-        title: "DeepSeek Harness",
-        mode: "webview",
-      },
-    });
+    expect(ready.setViewState).not.toHaveBeenCalled();
     expect(app.workspace.revealLeaf).toHaveBeenCalledWith(ready);
   });
 
