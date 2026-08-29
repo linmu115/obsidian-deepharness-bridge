@@ -10,7 +10,7 @@ export interface DeepHarnessBridgeSettings {
 }
 
 export const DEFAULT_SETTINGS: DeepHarnessBridgeSettings = {
-  dshOrigin: "http://127.0.0.1:51882",
+  dshOrigin: "http://127.0.0.1:3080",
   dshLaunchLogPath: "",
   bridgePort: DEFAULT_BRIDGE_PORT,
   companionDirectory: "DeepHarness",

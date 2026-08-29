@@ -1,8 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { launchUrlFromLog, resolveDshViewerUrl } from "../src/webviewer/launch-url.ts";
+import { DEFAULT_SETTINGS } from "../src/settings.ts";
 
 describe("authenticated DSH Web Viewer launch URL", () => {
+  it("defaults new installations to the current official DSH Web origin", () => {
+    expect(DEFAULT_SETTINGS.dshOrigin).toBe("http://127.0.0.1:3080");
+  });
+
   it("uses the latest launch URL emitted by the configured DSH process", () => {
     const log = [
       "dsh web: http://127.0.0.1:3080/?token=old",

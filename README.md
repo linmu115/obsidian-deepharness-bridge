@@ -22,3 +22,8 @@ Vault 是贴纸、高亮、标签和引用关系的唯一真源；插件不修�
 
 Bridge 默认使用 `127.0.0.1:18473`。通过 DSH Maintenance Engine 安装时会先检测
 Windows 端口可用性，再把同一端口写入 Obsidian 配置和 DSH 浏览器产物。
+
+新安装默认连接 DSH Web 的 `http://127.0.0.1:3080`。本地更新可运行
+`scripts/install-local.ps1 -VaultPath <Vault 路径>`；脚本把旧版备份放在
+`.obsidian/plugin-backups`，不会把同 ID 的备份留在 `.obsidian/plugins` 中被
+Obsidian 误识别为另一份可加载插件。
