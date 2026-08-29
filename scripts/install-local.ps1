@@ -22,6 +22,15 @@ $deploymentFiles = @(
   'LICENSE',
   'scripts/install-local.ps1'
 )
+$textFiles = @(
+  'manifest.json',
+  'styles.css',
+  'versions.json',
+  'package.json',
+  'README.md',
+  'LICENSE',
+  'scripts/install-local.ps1'
+)
 
 if (-not (Test-Path -LiteralPath $configRoot -PathType Container)) {
   throw "Obsidian configuration directory was not found: $configRoot"
@@ -55,12 +64,18 @@ if (Test-Path -LiteralPath $targetRoot -PathType Container) {
 }
 
 foreach ($name in $deploymentFiles) {
+  $source = Join-Path $sourceRoot $name
   $target = Join-Path $targetRoot $name
   $targetParent = Split-Path -Parent $target
   if (-not (Test-Path -LiteralPath $targetParent -PathType Container)) {
     New-Item -ItemType Directory -Path $targetParent -Force | Out-Null
   }
-  Copy-Item -LiteralPath (Join-Path $sourceRoot $name) -Destination $target -Force
+  if ($textFiles -contains $name) {
+    $content = [IO.File]::ReadAllText($source).Replace("`r`n", "`n").Replace("`r", "`n")
+    [IO.File]::WriteAllText($target, $content, [Text.UTF8Encoding]::new($false))
+  } else {
+    Copy-Item -LiteralPath $source -Destination $target -Force
+  }
 }
 
 $installed = Get-Content -LiteralPath (Join-Path $targetRoot 'manifest.json') -Raw | ConvertFrom-Json
