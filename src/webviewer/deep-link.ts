@@ -4,7 +4,7 @@ import { ensureDshWebViewer, type WebViewerApp } from "./adapter.ts";
 
 export interface DeepLinkHandlerOptions {
   app: WebViewerApp;
-  dshUrl: string | (() => string);
+  dshUrl: string | (() => string | Promise<string>);
   enqueue(action: DeepLinkAction): unknown;
   createActionId?: () => string;
   onError?: (error: unknown) => void;
@@ -16,7 +16,7 @@ export function parseDshUrl(value: string, createActionId: () => string = () => 
 
 export async function handleDshUrl(value: string, options: DeepLinkHandlerOptions): Promise<DeepLinkAction> {
   const action = parseDshUrl(value, options.createActionId);
-  const dshUrl = typeof options.dshUrl === "function" ? options.dshUrl() : options.dshUrl;
+  const dshUrl = await (typeof options.dshUrl === "function" ? options.dshUrl() : options.dshUrl);
   await ensureDshWebViewer(options.app, dshUrl);
   options.enqueue(action);
   return action;

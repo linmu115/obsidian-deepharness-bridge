@@ -4,12 +4,14 @@ export const DEFAULT_MAX_BODY_BYTES = 128 * 1_024;
 
 export interface DeepHarnessBridgeSettings {
   dshOrigin: string;
+  dshLaunchLogPath: string;
   bridgePort: number;
   companionDirectory: string;
 }
 
 export const DEFAULT_SETTINGS: DeepHarnessBridgeSettings = {
   dshOrigin: "http://127.0.0.1:51882",
+  dshLaunchLogPath: "",
   bridgePort: DEFAULT_BRIDGE_PORT,
   companionDirectory: "DeepHarness",
 };

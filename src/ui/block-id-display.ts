@@ -34,27 +34,41 @@ export function shouldCompactDshBlockIds(livePreview: boolean): boolean {
   return livePreview;
 }
 
-function createChip(document: Document, marker: string): HTMLSpanElement {
+function createChip(document: Document, marker: string, onDelete?: (marker: string) => void): HTMLSpanElement {
   const chip = document.createElement("span");
   chip.className = "dsh-block-id-chip";
-  chip.textContent = "DSH 引用";
+  chip.append("DSH 引用");
   chip.title = marker;
   chip.dataset.dshBlockId = marker;
   chip.setAttribute("aria-label", `DSH 引用块标记 ${marker}`);
+  if (onDelete !== undefined) {
+    const button = document.createElement("button");
+    button.className = "dsh-block-id-delete";
+    button.type = "button";
+    button.textContent = "×";
+    button.title = "删除 DSH 双向引用";
+    button.setAttribute("aria-label", "删除 DSH 引用");
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      onDelete(marker);
+    });
+    chip.append(button);
+  }
   return chip;
 }
 
 class DshBlockIdWidget extends WidgetType {
-  constructor(private readonly marker: string) {
+  constructor(private readonly marker: string, private readonly onDelete?: (marker: string) => void) {
     super();
   }
 
   override eq(other: DshBlockIdWidget): boolean {
-    return other.marker === this.marker;
+    return other.marker === this.marker && other.onDelete === this.onDelete;
   }
 
   override toDOM(view: EditorView): HTMLElement {
-    return createChip(view.dom.ownerDocument, this.marker);
+    return createChip(view.dom.ownerDocument, this.marker, this.onDelete);
   }
 
   override ignoreEvent(): boolean {
@@ -64,11 +78,12 @@ class DshBlockIdWidget extends WidgetType {
 
 export function createDshBlockIdCompactExtension(
   livePreviewField: StateField<boolean>,
+  onDelete?: (marker: string) => void,
 ): Extension {
   const decorator = new MatchDecorator({
     regexp: new RegExp(DSH_BLOCK_ID_SOURCE, "g"),
     decoration: (match) => Decoration.replace({
-      widget: new DshBlockIdWidget(match[0]),
+      widget: new DshBlockIdWidget(match[0], onDelete),
     }),
   });
 
@@ -113,7 +128,7 @@ function readingTextNodes(root: HTMLElement): Text[] {
   return nodes;
 }
 
-export function compactRenderedDshBlockIds(root: HTMLElement): number {
+export function compactRenderedDshBlockIds(root: HTMLElement, onDelete?: (marker: string) => void): number {
   let replacementCount = 0;
   for (const node of readingTextNodes(root)) {
     const parent = node.parentElement;
@@ -125,7 +140,7 @@ export function compactRenderedDshBlockIds(root: HTMLElement): number {
     let cursor = 0;
     for (const match of matches) {
       fragment.append(node.data.slice(cursor, match.from));
-      fragment.append(createChip(root.ownerDocument, match.marker));
+      fragment.append(createChip(root.ownerDocument, match.marker, onDelete));
       cursor = match.to;
       replacementCount += 1;
     }

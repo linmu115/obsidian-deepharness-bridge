@@ -40,7 +40,7 @@ describe("v1 pending citation migration", () => {
   it("backfills current full Markdown but waits for explicit targeted release", async () => {
     const vault = new MemoryVault(new Map([[notePath, markdown]]));
     const migrated = await migrateStoredPluginData({ settings: {}, pendingCitations: [legacy] }, options(vault));
-    expect(migrated).toMatchObject({ dataVersion: 2, vaultId: "vault-stable-1" });
+    expect(migrated).toMatchObject({ dataVersion: 2, vaultId: "vault-stable-1", referenceDeleteRequests: [] });
     expect(migrated.pendingReferences).toHaveLength(1);
     expect(migrated.pendingReferences[0]).toMatchObject({
       state: "migrated-ready",
@@ -94,6 +94,29 @@ describe("v1 pending citation migration", () => {
     };
     expect((await migrateStoredPluginData(released, options(new MemoryVault()))).pendingReferences[0]?.state).toBe("queued");
     expect((await migrateStoredPluginData(claimed, options(new MemoryVault()))).pendingReferences[0]?.state).toBe("claimed");
+  });
+
+  it("backfills old v2 data and preserves durable delete requests across restart", async () => {
+    const base = await migrateStoredPluginData({}, options(new MemoryVault()));
+    const oldV2 = structuredClone(base) as Omit<StoredPluginDataV2, "referenceDeleteRequests"> & {
+      referenceDeleteRequests?: unknown;
+    };
+    delete oldV2.referenceDeleteRequests;
+    await expect(migrateStoredPluginData(oldV2, options(new MemoryVault())))
+      .resolves.toMatchObject({ referenceDeleteRequests: [] });
+
+    const request = {
+      annotationProtocolVersion: 2,
+      type: "reference-delete-request",
+      actionId: "delete-action-1",
+      referenceId: "reference-1",
+      profileId: "web",
+      sessionId: "session-1",
+      setId: "set-1",
+      requestedAt: 100,
+    } as const;
+    await expect(migrateStoredPluginData({ ...base, referenceDeleteRequests: [request] }, options(new MemoryVault())))
+      .resolves.toMatchObject({ referenceDeleteRequests: [request] });
   });
 
   it("backfills marker ownership for existing v2 records and returns the discarded record", async () => {

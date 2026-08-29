@@ -1,6 +1,6 @@
-import type { DeepLinkAction, ObsidianReferenceCaptureV2, ReferenceClaimV2 } from "../protocol.ts";
+import type { DeepLinkAction, ObsidianReferenceCaptureV2, ReferenceClaimV2, ReferenceDeleteRequestV2 } from "../protocol.ts";
 
-export type QueuedBridgeMessage = DeepLinkAction | ObsidianReferenceCaptureV2;
+export type QueuedBridgeMessage = DeepLinkAction | ObsidianReferenceCaptureV2 | ReferenceDeleteRequestV2;
 
 export interface QueuedAction {
   cursor: number;
