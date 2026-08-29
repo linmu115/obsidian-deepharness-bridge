@@ -1,7 +1,11 @@
 export interface WebViewerLeaf {
   view?: { getState?(): unknown };
   getViewState?(): { state?: unknown };
-  setViewState(state: { type: string; active: boolean; state: { url: string; title: string } }): Promise<void>;
+  setViewState(state: {
+    type: string;
+    active: boolean;
+    state: { url: string; title: string; mode: "webview" };
+  }): Promise<void>;
 }
 
 export interface WebViewerApp {
@@ -28,9 +32,9 @@ function loopbackUrl(value: string): URL {
   return url;
 }
 
-function leafState(leaf: WebViewerLeaf): { url?: string; title?: string } {
+function leafState(leaf: WebViewerLeaf): { url?: string; title?: string; mode?: string } {
   const value = leaf.view?.getState?.() ?? leaf.getViewState?.().state;
-  return value && typeof value === "object" ? value as { url?: string; title?: string } : {};
+  return value && typeof value === "object" ? value as { url?: string; title?: string; mode?: string } : {};
 }
 
 export async function ensureDshWebViewer(app: WebViewerApp, dshUrl: string): Promise<WebViewerLeaf> {
@@ -40,7 +44,7 @@ export async function ensureDshWebViewer(app: WebViewerApp, dshUrl: string): Pro
     if (!state.url) return false;
     try {
       const current = loopbackUrl(state.url);
-      return current.origin === target.origin && (state.title === "DeepSeek Harness" || current.href === target.href);
+      return current.origin === target.origin;
     } catch {
       return false;
     }
@@ -51,7 +55,7 @@ export async function ensureDshWebViewer(app: WebViewerApp, dshUrl: string): Pro
       await existing.setViewState({
         type: "webviewer",
         active: true,
-        state: { url: target.href, title: "DeepSeek Harness" },
+        state: { url: target.href, title: "DeepSeek Harness", mode: "webview" },
       });
     }
     app.workspace.revealLeaf(existing);
@@ -64,7 +68,7 @@ export async function ensureDshWebViewer(app: WebViewerApp, dshUrl: string): Pro
   await leaf.setViewState({
     type: "webviewer",
     active: true,
-    state: { url: target.href, title: "DeepSeek Harness" },
+    state: { url: target.href, title: "DeepSeek Harness", mode: "webview" },
   });
   app.workspace.revealLeaf(leaf);
   return leaf;
