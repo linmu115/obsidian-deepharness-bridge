@@ -34,7 +34,9 @@ interface LinkInterceptorPlugin {
 export function registerDshLinkInterceptor(plugin: LinkInterceptorPlugin, options: DeepLinkHandlerOptions): void {
   plugin.registerDomEvent(document, "click", (event) => {
     const target = event.target;
-    const link = target instanceof Element ? target.closest<HTMLAnchorElement>("a[href^='dsh://']") : null;
+    const link = target instanceof Element
+      ? target.closest<HTMLAnchorElement>("a[href^='dsh://'], a[href^='obsidian://deepharness']")
+      : null;
     if (!link) return;
     event.preventDefault();
     event.stopPropagation();

@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+import { JSDOM } from "jsdom";
 
 import { ensureDshWebViewer } from "../src/webviewer/adapter.ts";
-import { handleDshUrl } from "../src/webviewer/deep-link.ts";
+import { handleDshUrl, registerDshLinkInterceptor } from "../src/webviewer/deep-link.ts";
 import { buildObsidianDshLink, obsidianProtocolUrl } from "../src/logical-link.ts";
 
 function fakeLeaf(url: string) {
@@ -41,6 +42,47 @@ describe("Obsidian DSH Web Viewer adapter", () => {
       quoteHash: "sha256:30101ebf",
       sticker: "9bb3a80e-230d-44d1-a37c-f7b79d2bf315",
     })).toBe(expected);
+  });
+
+  it("recovers annotation identity from Obsidian's case-normalized protocol parameters", () => {
+    expect(obsidianProtocolUrl({
+      action: "deepharness",
+      session: "session-demo",
+      anchor: "user-node-42",
+      quotehash: "sha256:30101ebf",
+      setid: "set-1",
+      referenceid: "reference-1",
+    })).toContain("setId=set-1&referenceId=reference-1");
+  });
+
+  it("intercepts a rendered Obsidian link before the protocol handler can discard its identity", async () => {
+    const dom = new JSDOM('<a id="link" href="obsidian://deepharness?session=session-demo&anchor=user-node-42&setId=set-1&referenceId=reference-1"><span id="label">打开 DSH 会话</span></a>', {
+      url: "app://obsidian.md/note",
+    });
+    const previousDocument = globalThis.document;
+    const previousElement = globalThis.Element;
+    Object.assign(globalThis, { document: dom.window.document, Element: dom.window.Element });
+    try {
+      const { app } = appWith([fakeLeaf("http://127.0.0.1:51882/")]);
+      const enqueue = vi.fn();
+      registerDshLinkInterceptor({
+        registerDomEvent(element, type, callback, options) {
+          element.addEventListener(type, callback, options);
+        },
+      }, { app, dshUrl: "http://127.0.0.1:51882/", enqueue });
+
+      const event = new dom.window.MouseEvent("click", { bubbles: true, cancelable: true });
+      dom.window.document.querySelector("#label")?.dispatchEvent(event);
+      await vi.waitFor(() => expect(enqueue).toHaveBeenCalledOnce());
+      expect(event.defaultPrevented).toBe(true);
+      expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({
+        setId: "set-1",
+        referenceId: "reference-1",
+      }));
+    } finally {
+      Object.assign(globalThis, { document: previousDocument, Element: previousElement });
+      dom.window.close();
+    }
   });
 
   it("keeps sticker identity out of the DSH deep-link action payload", async () => {
