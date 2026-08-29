@@ -5,9 +5,9 @@ import { ensureDshWebViewer } from "../src/webviewer/adapter.ts";
 import { handleDshUrl, registerDshLinkInterceptor } from "../src/webviewer/deep-link.ts";
 import { buildObsidianDshLink, obsidianProtocolUrl } from "../src/logical-link.ts";
 
-function fakeLeaf(url: string) {
+function fakeLeaf(url: string, title = "DeepSeek Harness") {
   return {
-    view: { getState: () => ({ url, title: "DeepSeek Harness" }) },
+    view: { getState: () => ({ url, title, mode: "webview" }) },
     setViewState: vi.fn(async () => undefined),
   };
 }
@@ -127,6 +127,7 @@ describe("Obsidian DSH Web Viewer adapter", () => {
       state: {
         url: "http://127.0.0.1:51882/?token=current-token",
         title: "DeepSeek Harness",
+        mode: "webview",
       },
     });
     expect(app.workspace.revealLeaf).toHaveBeenCalledWith(existing);
@@ -140,8 +141,27 @@ describe("Obsidian DSH Web Viewer adapter", () => {
     expect(created.setViewState).toHaveBeenCalledWith({
       type: "webviewer",
       active: true,
-      state: { url: "http://localhost:51882/", title: "DeepSeek Harness" },
+      state: { url: "http://localhost:51882/", title: "DeepSeek Harness", mode: "webview" },
     });
+  });
+
+  it("reuses a same-origin DSH tab after its title changes to the session title", async () => {
+    const existing = fakeLeaf("http://127.0.0.1:51882/", "A session title — DeepSeek Harness");
+    const { app } = appWith([existing]);
+
+    await ensureDshWebViewer(app, "http://127.0.0.1:51882/?token=current-token");
+
+    expect(app.workspace.getLeaf).not.toHaveBeenCalled();
+    expect(existing.setViewState).toHaveBeenCalledWith({
+      type: "webviewer",
+      active: true,
+      state: {
+        url: "http://127.0.0.1:51882/?token=current-token",
+        title: "DeepSeek Harness",
+        mode: "webview",
+      },
+    });
+    expect(app.workspace.revealLeaf).toHaveBeenCalledWith(existing);
   });
 
   it("activates the Web Viewer before enqueuing a parsed logical deep link", async () => {
