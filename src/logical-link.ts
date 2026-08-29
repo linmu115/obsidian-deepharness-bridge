@@ -24,16 +24,26 @@ export function buildObsidianDshLink(location: DshLogicalLocation): string {
 }
 
 export function obsidianProtocolUrl(params: Record<string, string>): string {
-  if (params.action !== OBSIDIAN_DEEPHARNESS_ACTION) {
+  const read = (name: string): string | undefined => {
+    const exact = params[name];
+    if (exact !== undefined) return exact;
+    const normalized = name.toLowerCase();
+    return Object.entries(params).find(([key]) => key.toLowerCase() === normalized)?.[1];
+  };
+  if (read("action") !== OBSIDIAN_DEEPHARNESS_ACTION) {
     throw new Error("Unsupported Obsidian protocol action");
   }
+  const quoteHash = read("quoteHash");
+  const stickerId = read("sticker");
+  const setId = read("setId");
+  const referenceId = read("referenceId");
   return buildObsidianDshLink({
-    sessionId: params.session ?? "",
-    anchorId: params.anchor ?? "",
-    ...(params.quoteHash ? { quoteHash: params.quoteHash } : {}),
-    ...(params.sticker ? { stickerId: params.sticker } : {}),
-    ...(params.setId ? { setId: params.setId } : {}),
-    ...(params.referenceId ? { referenceId: params.referenceId } : {}),
+    sessionId: read("session") ?? "",
+    anchorId: read("anchor") ?? "",
+    ...(quoteHash ? { quoteHash } : {}),
+    ...(stickerId ? { stickerId } : {}),
+    ...(setId ? { setId } : {}),
+    ...(referenceId ? { referenceId } : {}),
   });
 }
 

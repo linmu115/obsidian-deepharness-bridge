@@ -25,8 +25,8 @@ importers:
         specifier: ^24.3.0
         version: 24.13.3
       dsh-annotation-core:
-        specifier: https://codeload.github.com/linmu115/dsh-annotation-core/tar.gz/4bd5a042d403983e244c125f2f42512559d0e067
-        version: https://codeload.github.com/linmu115/dsh-annotation-core/tar.gz/4bd5a042d403983e244c125f2f42512559d0e067
+        specifier: https://codeload.github.com/linmu115/dsh-annotation-core/tar.gz/a5f921df009d1479031d73db10b192e5d44f4c30
+        version: https://codeload.github.com/linmu115/dsh-annotation-core/tar.gz/a5f921df009d1479031d73db10b192e5d44f4c30
       jsdom:
         specifier: 26.1.0
         version: 26.1.0
@@ -446,9 +446,9 @@ packages:
     resolution: {integrity: sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ==}
     engines: {node: '>=8'}
 
-  dsh-annotation-core@https://codeload.github.com/linmu115/dsh-annotation-core/tar.gz/4bd5a042d403983e244c125f2f42512559d0e067:
-    resolution: {tarball: https://codeload.github.com/linmu115/dsh-annotation-core/tar.gz/4bd5a042d403983e244c125f2f42512559d0e067}
-    version: 0.3.0
+  dsh-annotation-core@https://codeload.github.com/linmu115/dsh-annotation-core/tar.gz/a5f921df009d1479031d73db10b192e5d44f4c30:
+    resolution: {tarball: https://codeload.github.com/linmu115/dsh-annotation-core/tar.gz/a5f921df009d1479031d73db10b192e5d44f4c30}
+    version: 0.3.1
     engines: {node: '>=20'}
     peerDependencies:
       '@deepseek-ai/cordis': '*'
@@ -1274,7 +1274,7 @@ snapshots:
 
   detect-libc@2.1.2: {}
 
-  dsh-annotation-core@https://codeload.github.com/linmu115/dsh-annotation-core/tar.gz/4bd5a042d403983e244c125f2f42512559d0e067:
+  dsh-annotation-core@https://codeload.github.com/linmu115/dsh-annotation-core/tar.gz/a5f921df009d1479031d73db10b192e5d44f4c30:
     dependencies:
       '@deepseek-ai/schemastery': 3.18.1
       zod: 4.4.3
