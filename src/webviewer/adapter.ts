@@ -51,7 +51,9 @@ export async function ensureDshWebViewer(app: WebViewerApp, dshUrl: string): Pro
   });
   if (existing) {
     const state = leafState(existing);
-    if (target.search && state.url && new URL(state.url).href !== target.href) {
+    const needsWebviewMode = state.mode !== "webview";
+    const needsCurrentAuthUrl = Boolean(target.search && state.url && new URL(state.url).href !== target.href);
+    if (needsWebviewMode || needsCurrentAuthUrl) {
       await existing.setViewState({
         type: "webviewer",
         active: true,

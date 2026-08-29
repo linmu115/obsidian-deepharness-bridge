@@ -5,9 +5,9 @@ import { ensureDshWebViewer } from "../src/webviewer/adapter.ts";
 import { handleDshUrl, registerDshLinkInterceptor } from "../src/webviewer/deep-link.ts";
 import { buildObsidianDshLink, obsidianProtocolUrl } from "../src/logical-link.ts";
 
-function fakeLeaf(url: string, title = "DeepSeek Harness") {
+function fakeLeaf(url: string, title = "DeepSeek Harness", mode = "webview") {
   return {
-    view: { getState: () => ({ url, title, mode: "webview" }) },
+    view: { getState: () => ({ url, title, mode }) },
     setViewState: vi.fn(async () => undefined),
   };
 }
@@ -157,6 +157,26 @@ describe("Obsidian DSH Web Viewer adapter", () => {
       active: true,
       state: {
         url: "http://127.0.0.1:51882/?token=current-token",
+        title: "DeepSeek Harness",
+        mode: "webview",
+      },
+    });
+    expect(app.workspace.revealLeaf).toHaveBeenCalledWith(existing);
+  });
+
+  it("recovers an existing authenticated DSH tab that Obsidian left in blank mode", async () => {
+    const authenticated = "http://127.0.0.1:51882/?token=current-token";
+    const existing = fakeLeaf(authenticated, "data:text/plain,", "blank");
+    const { app } = appWith([existing]);
+
+    await ensureDshWebViewer(app, authenticated);
+
+    expect(app.workspace.getLeaf).not.toHaveBeenCalled();
+    expect(existing.setViewState).toHaveBeenCalledWith({
+      type: "webviewer",
+      active: true,
+      state: {
+        url: authenticated,
         title: "DeepSeek Harness",
         mode: "webview",
       },
