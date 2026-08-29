@@ -39,20 +39,25 @@ function leafState(leaf: WebViewerLeaf): { url?: string; title?: string; mode?: 
 
 export async function ensureDshWebViewer(app: WebViewerApp, dshUrl: string): Promise<WebViewerLeaf> {
   const target = loopbackUrl(dshUrl);
-  const existing = app.workspace.getLeavesOfType("webviewer").find((leaf) => {
+  const candidates = app.workspace.getLeavesOfType("webviewer").filter((leaf) => {
     const state = leafState(leaf);
     if (!state.url) return false;
-    try {
-      const current = loopbackUrl(state.url);
-      return current.origin === target.origin;
-    } catch {
-      return false;
-    }
+    try { return loopbackUrl(state.url).origin === target.origin; }
+    catch { return false; }
   });
+  const existing = candidates.find((leaf) => leafState(leaf).mode === "webview") ?? candidates[0];
   if (existing) {
     const state = leafState(existing);
+    const currentHref = state.url ? new URL(state.url).href : undefined;
     const needsWebviewMode = state.mode !== "webview";
-    const needsCurrentAuthUrl = Boolean(target.search && state.url && new URL(state.url).href !== target.href);
+    const needsCurrentAuthUrl = Boolean(target.search && currentHref !== target.href);
+    if (needsWebviewMode && currentHref === target.href) {
+      await existing.setViewState({
+        type: "webviewer",
+        active: true,
+        state: { url: "about:blank", title: "DeepSeek Harness", mode: "webview" },
+      });
+    }
     if (needsWebviewMode || needsCurrentAuthUrl) {
       await existing.setViewState({
         type: "webviewer",

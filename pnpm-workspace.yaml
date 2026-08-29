@@ -5,5 +5,5 @@ autoInstallPeers: false
 strictPeerDependencies: false
 
 allowBuilds:
-  'dsh-annotation-core@https://codeload.github.com/linmu115/dsh-annotation-core/tar.gz/a5f921df009d1479031d73db10b192e5d44f4c30': true
+  'dsh-annotation-core@git+https://github.com/linmu115/dsh-annotation-core.git': true
   esbuild: true
