@@ -41,6 +41,10 @@ import {
   createDshBlockIdCompactExtension,
   hideRenderedDshReferenceBlocks,
 } from "./ui/block-id-display.ts";
+import {
+  compactRenderedDshStickerBacklinks,
+  createDshStickerBacklinkCompactExtension,
+} from "./ui/sticker-backlink-display.ts";
 import { ObsidianVaultAdapter } from "./vault/obsidian-adapter.ts";
 import {
   commitReferenceBacklink,
@@ -127,8 +131,10 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
       onDelete: (marker: string) => { void this.deleteReferencesForMarker(marker); },
     };
     this.registerEditorExtension(createDshBlockIdCompactExtension(editorLivePreviewField, chipActions));
+    this.registerEditorExtension(createDshStickerBacklinkCompactExtension(editorLivePreviewField));
     this.registerMarkdownPostProcessor((element) => {
       compactRenderedDshBlockIds(element, chipActions);
+      compactRenderedDshStickerBacklinks(element);
       hideRenderedDshReferenceBlocks(element);
     });
 
