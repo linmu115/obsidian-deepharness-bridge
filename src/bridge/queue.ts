@@ -22,6 +22,14 @@ export class ClientActionQueue {
     const id = messageId(message);
     const existing = this.#entries.find((entry) => messageId(entry.message) === id);
     if (existing) return existing.cursor;
+    if (message.type === "deep-link") {
+      // A navigation request represents the user's latest destination, not a
+      // durable job. Retaining older requests makes a newly mounted DSH page
+      // replay every historical click and repeatedly pull the user back.
+      for (let index = this.#entries.length - 1; index >= 0; index -= 1) {
+        if (this.#entries[index]!.message.type === "deep-link") this.#entries.splice(index, 1);
+      }
+    }
     const cursor = ++this.#cursor;
     this.#entries.push({ cursor, message, acknowledgedBy: new Set() });
     return cursor;

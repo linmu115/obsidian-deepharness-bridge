@@ -330,8 +330,11 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
       if (request.method === "POST" && ackMatch) {
         await readJsonBody(request, maxBodyBytes);
         const actionId = decodeURIComponent(ackMatch[1] ?? "");
-        if (!queue.acknowledge(authentication.clientId, actionId)) throw new HttpError(404, "Action was not found");
-        json(response, 200, { acknowledged: true, actionId }, allowedOrigin);
+        // Multiple DSH surfaces can observe the same one-shot command before
+        // the first acknowledgement removes it. A later acknowledgement is
+        // therefore an idempotent success, not an actionable 404.
+        const acknowledged = queue.acknowledge(authentication.clientId, actionId);
+        json(response, 200, { acknowledged, actionId }, allowedOrigin);
         return;
       }
 

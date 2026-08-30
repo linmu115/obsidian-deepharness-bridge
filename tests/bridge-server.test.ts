@@ -139,7 +139,7 @@ describe("loopback bridge server", () => {
     expect(expired.status).toBe(401);
   });
 
-  it("keeps FIFO actions until the client acknowledges them", async () => {
+  it("keeps only the latest queued navigation intent", async () => {
     const bridge = await start();
     const token = await handshake(bridge);
     const secondAction: DeepLinkAction = {
@@ -156,10 +156,7 @@ describe("loopback bridge server", () => {
     expect(pending.status).toBe(200);
     expect(await pending.json()).toEqual({
       cursor: 2,
-      actions: [
-        { cursor: 1, message: firstAction },
-        { cursor: 2, message: secondAction },
-      ],
+      actions: [{ cursor: 2, message: secondAction }],
     });
 
     const ack = await request(bridge, `/v1/actions/${firstAction.actionId}/ack`, {
@@ -168,6 +165,7 @@ describe("loopback bridge server", () => {
       body: "{}",
     });
     expect(ack.status).toBe(200);
+    expect(await ack.json()).toEqual({ acknowledged: false, actionId: firstAction.actionId });
     const remaining = await request(bridge, "/v1/actions/next?after=0", {
       headers: authorized(token),
     });
@@ -175,6 +173,21 @@ describe("loopback bridge server", () => {
       cursor: 2,
       actions: [{ cursor: 2, message: secondAction }],
     });
+  });
+
+  it("treats a repeated one-shot acknowledgement as idempotent", async () => {
+    const bridge = await start();
+    bridge.enqueue(firstAction);
+    const token = await handshakeV2(bridge, "dsh-web-idempotent-ack");
+    const options = {
+      method: "POST",
+      headers: authorized(token, { "content-type": "application/json" }),
+      body: "{}",
+    } as const;
+    const first = await request(bridge, `/v1/actions/${firstAction.actionId}/ack`, options);
+    const repeated = await request(bridge, `/v1/actions/${firstAction.actionId}/ack`, options);
+    expect(await first.json()).toEqual({ acknowledged: true, actionId: firstAction.actionId });
+    expect(await repeated.json()).toEqual({ acknowledged: false, actionId: firstAction.actionId });
   });
 
   it("consumes an acknowledged deep link globally instead of replaying it to a new client", async () => {
