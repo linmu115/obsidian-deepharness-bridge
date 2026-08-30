@@ -177,6 +177,48 @@ describe("loopback bridge server", () => {
     });
   });
 
+  it("consumes an acknowledged deep link globally instead of replaying it to a new client", async () => {
+    const bridge = await start();
+    bridge.enqueue(firstAction);
+    const firstToken = await handshakeV2(bridge, "dsh-web-first");
+    const ack = await request(bridge, `/v1/actions/${firstAction.actionId}/ack`, {
+      method: "POST",
+      headers: authorized(firstToken, { "content-type": "application/json" }),
+      body: "{}",
+    });
+    expect(ack.status).toBe(200);
+
+    const secondToken = await handshakeV2(bridge, "dsh-web-second");
+    const pending = await request(bridge, "/v2/actions/pending?after=0", {
+      headers: authorized(secondToken),
+    });
+    expect(await pending.json()).toMatchObject({ cursor: 1, actions: [] });
+  });
+
+  it("cancels queued navigation when its Obsidian reference is deleted", async () => {
+    const bridge = await start();
+    bridge.enqueue({ ...firstAction, referenceId: "reference-deleted" });
+    bridge.enqueue({
+      annotationProtocolVersion: 2,
+      type: "reference-delete-request",
+      actionId: "delete-reference-navigation",
+      referenceId: "reference-deleted",
+      profileId: "web",
+      sessionId: "session-demo",
+      setId: "set-deleted",
+      requestedAt: 100,
+    });
+
+    const token = await handshakeV2(bridge, "dsh-web-after-delete");
+    const pending = await request(bridge, "/v2/actions/pending?after=0", {
+      headers: authorized(token),
+    });
+    expect(await pending.json()).toMatchObject({
+      cursor: 2,
+      actions: [{ cursor: 2, message: { type: "reference-delete-request" } }],
+    });
+  });
+
   it("does not expose v2 reference captures through the historical v1 action route", async () => {
     const bridge = await start();
     const token = await handshake(bridge);

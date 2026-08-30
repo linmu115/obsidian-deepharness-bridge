@@ -85,14 +85,16 @@ describe("Obsidian DSH Web Viewer adapter", () => {
     }
   });
 
-  it("keeps sticker identity out of the DSH deep-link action payload", async () => {
+  it("preserves sticker identity in the DSH deep-link action payload", async () => {
     const { app } = appWith([fakeLeaf("http://127.0.0.1:51882/")]);
     const action = await handleDshUrl(
       "obsidian://deepharness?session=session-demo&anchor=user-node-42&quoteHash=sha256%3A30101ebf&sticker=9bb3a80e-230d-44d1-a37c-f7b79d2bf315",
       { app, dshUrl: "http://127.0.0.1:51882/", enqueue: vi.fn() },
     );
 
-    expect(action).not.toHaveProperty("stickerId");
+    expect(action).toMatchObject({
+      stickerId: "9bb3a80e-230d-44d1-a37c-f7b79d2bf315",
+    });
   });
 
   it("preserves the annotation identity needed to open the exact DSH reference", async () => {

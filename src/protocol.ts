@@ -57,6 +57,7 @@ export const deepLinkActionSchema = z.object({
   sessionId: z.string().min(1),
   anchorId: z.string().min(1),
   quoteHash: z.string().optional(),
+  stickerId: z.string().uuid().optional(),
   setId: z.string().min(1).optional(),
   referenceId: z.string().min(1).optional(),
 });

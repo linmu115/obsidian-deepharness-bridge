@@ -406,7 +406,11 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
     },
     enqueue(message) {
       if (message.type === "reference-capture") return queue.enqueue(ObsidianReferenceCaptureV2Schema.parse(message));
-      if (message.type === "reference-delete-request") return queue.enqueue(ReferenceDeleteRequestV2Schema.parse(message));
+      if (message.type === "reference-delete-request") {
+        const deletion = ReferenceDeleteRequestV2Schema.parse(message);
+        queue.cancelReferenceDeepLinks(deletion.referenceId);
+        return queue.enqueue(deletion);
+      }
       const legacy = parseBridgeMessage(message);
       if (legacy.type !== "deep-link") throw new TypeError("Only deep links, reference captures and reference deletions are queueable");
       return queue.enqueue(legacy as QueuedBridgeMessage);

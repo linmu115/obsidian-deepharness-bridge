@@ -96,6 +96,7 @@ export function parseDshLogicalLink(
     sessionId: location.sessionId,
     anchorId: location.anchorId,
     ...(location.quoteHash ? { quoteHash: location.quoteHash } : {}),
+    ...(location.stickerId ? { stickerId: location.stickerId } : {}),
     ...(location.setId ? { setId: location.setId } : {}),
     ...(location.referenceId ? { referenceId: location.referenceId } : {}),
   };
