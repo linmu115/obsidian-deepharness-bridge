@@ -52,7 +52,7 @@ async function handshakeV2(bridge: RunningBridge, clientId = "dsh-web-v2", surfa
   expect(body).toMatchObject({ annotationProtocolVersion: 2 });
   expect(body.capabilities).toEqual(expect.arrayContaining([
     "reference-capture-v2", "reference-refresh", "backlink-commit-v2", "reference-delete-v2",
-    "targeted-deep-link-v1",
+    "targeted-deep-link-v1", "sticker-backlink-delete-v1",
   ]));
   return body.token;
 }
@@ -325,6 +325,26 @@ describe("loopback bridge server", () => {
       anchorId: "user-node-42",
       quoteHash: "sha256:30101ebf",
     });
+  });
+
+  it("deletes every managed Obsidian backlink for a sticker identity", async () => {
+    const onDeleteStickerBacklinks = vi.fn(async () => ({ notesChanged: 2, linksRemoved: 3 }));
+    const bridge = await start({ onDeleteStickerBacklinks });
+    const token = await handshakeV2(bridge);
+    const target = {
+      stickerId: "9bb3a80e-230d-44d1-a37c-f7b79d2bf315",
+      sessionId: "session-demo",
+      anchorId: "user-node-42",
+      quoteHash: "sha256:30101ebf",
+    };
+    const response = await request(bridge, "/v1/sticker-backlinks/delete", {
+      method: "POST",
+      headers: authorized(token, { "content-type": "application/json" }),
+      body: JSON.stringify(target),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ notesChanged: 2, linksRemoved: 3 });
+    expect(onDeleteStickerBacklinks).toHaveBeenCalledWith(target);
   });
 
   it("returns bounded parsing errors and releases the listening port", async () => {

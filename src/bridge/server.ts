@@ -20,6 +20,7 @@ import {
   PROTOCOL_VERSION,
   sessionNoteDocumentSchema,
   stickerBacklinkSchema,
+  stickerBacklinkDeleteResultSchema,
   stickerBacklinkTargetSchema,
   type OpenNoteAction,
   type BacklinkCommitV2,
@@ -31,6 +32,7 @@ import {
   type ReferenceRefreshResultV2,
   type SessionNoteDocument,
   type StickerBacklink,
+  type StickerBacklinkDeleteResult,
   type StickerBacklinkTarget,
 } from "../protocol.ts";
 import {
@@ -66,6 +68,7 @@ export interface BridgeServerOptions {
   onReadSessionNote?: (sessionId: string) => Promise<SessionNoteDocument | null>;
   onSaveSessionNote?: (request: SaveSessionNoteRequest) => Promise<{ revision: string }>;
   onListStickerBacklinks?: (target: StickerBacklinkTarget) => Promise<StickerBacklink[]>;
+  onDeleteStickerBacklinks?: (target: StickerBacklinkTarget) => Promise<StickerBacklinkDeleteResult>;
   onClaimReference?: (claim: ReferenceClaimV2) => Promise<void>;
   onRefreshReference?: (request: ReferenceRefreshRequestV2) => Promise<ReferenceRefreshResultV2>;
   onDiscardReference?: (request: ReferenceDiscardV2) => Promise<void>;
@@ -96,6 +99,7 @@ const BRIDGE_CAPABILITIES = [
   "backlink-commit-v2",
   "reference-delete-v2",
   "targeted-deep-link-v1",
+  "sticker-backlink-delete-v1",
 ] as const;
 
 function visibleTo(authentication: TokenRecord, message: QueuedBridgeMessage): boolean {
@@ -385,6 +389,15 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
           await (options.onListStickerBacklinks?.(target) ?? Promise.resolve([])),
         );
         json(response, 200, { backlinks }, allowedOrigin);
+        return;
+      }
+
+      if (request.method === "POST" && requestUrl.pathname === "/v1/sticker-backlinks/delete") {
+        const target = stickerBacklinkTargetSchema.parse(await readJsonBody(request, maxBodyBytes));
+        const result = stickerBacklinkDeleteResultSchema.parse(
+          await (options.onDeleteStickerBacklinks?.(target) ?? Promise.resolve({ notesChanged: 0, linksRemoved: 0 })),
+        );
+        json(response, 200, result, allowedOrigin);
         return;
       }
 

@@ -24,14 +24,28 @@ export class WebViewerUnavailableError extends Error {
 }
 
 export const DSH_BRIDGE_SURFACE_PARAMETER = "dshBridgeSurface";
+const provisionedSurfaces = new WeakMap<WebViewerLeaf, string>();
 
 export function dshViewerUrlForSurface(dshUrl: string, surfaceId: string): string {
   const target = loopbackUrl(dshUrl);
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(surfaceId)) {
     throw new Error("DSH Web Viewer surface ID must be a UUID");
   }
-  target.searchParams.set(DSH_BRIDGE_SURFACE_PARAMETER, surfaceId);
+  // DSH exchanges its one-use launch token with a 303 redirect to a clean `/`.
+  // URL fragments are not sent to that server and survive the redirect, while
+  // ordinary query parameters are intentionally discarded with the token.
+  const fragment = new URLSearchParams(target.hash.replace(/^#/, ""));
+  fragment.set(DSH_BRIDGE_SURFACE_PARAMETER, surfaceId);
+  target.hash = fragment.toString();
   return target.href;
+}
+
+function surfaceIdFromUrl(url: URL | undefined): string | undefined {
+  if (url === undefined) return undefined;
+  const fragment = new URLSearchParams(url.hash.replace(/^#/, ""));
+  return fragment.get(DSH_BRIDGE_SURFACE_PARAMETER)
+    ?? url.searchParams.get(DSH_BRIDGE_SURFACE_PARAMETER)
+    ?? undefined;
 }
 
 function loopbackUrl(value: string): URL {
@@ -73,9 +87,11 @@ export async function ensureDshWebViewer(app: WebViewerApp, dshUrl: string): Pro
     const currentUrl = state.url ? new URL(state.url) : undefined;
     const currentHref = currentUrl?.href;
     const needsWebviewMode = state.mode !== "webview";
-    const targetSurfaceId = target.searchParams.get(DSH_BRIDGE_SURFACE_PARAMETER);
+    const targetSurfaceId = surfaceIdFromUrl(target);
     const needsSurfaceRouting = targetSurfaceId !== null
-      && currentUrl?.searchParams.get(DSH_BRIDGE_SURFACE_PARAMETER) !== targetSurfaceId;
+      && targetSurfaceId !== undefined
+      && surfaceIdFromUrl(currentUrl) !== targetSurfaceId
+      && provisionedSurfaces.get(existing) !== targetSurfaceId;
     if (needsWebviewMode && currentHref === target.href) {
       await existing.setViewState({
         type: "webviewer",
@@ -89,6 +105,7 @@ export async function ensureDshWebViewer(app: WebViewerApp, dshUrl: string): Pro
         active: true,
         state: { url: target.href, title: "DeepSeek Harness", mode: "webview" },
       });
+      if (targetSurfaceId !== undefined) provisionedSurfaces.set(existing, targetSurfaceId);
     }
     app.workspace.revealLeaf(existing);
     return existing;
@@ -102,6 +119,8 @@ export async function ensureDshWebViewer(app: WebViewerApp, dshUrl: string): Pro
     active: true,
     state: { url: target.href, title: "DeepSeek Harness", mode: "webview" },
   });
+  const targetSurfaceId = surfaceIdFromUrl(target);
+  if (targetSurfaceId !== undefined) provisionedSurfaces.set(leaf, targetSurfaceId);
   app.workspace.revealLeaf(leaf);
   return leaf;
 }

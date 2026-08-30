@@ -17,6 +17,7 @@ import {
   ObsidianReferenceCaptureV2Schema,
   canonicalSha256,
   type BacklinkCommitV2,
+  type DeepLinkAction,
   type ObsidianReferenceCaptureV2,
   type ReferenceClaimV2,
   type ReferenceDiscardV2,
@@ -51,6 +52,7 @@ import { cleanupOwnedPendingMarker } from "./vault/pending-reference-cleanup.ts"
 import { refreshObsidianReference } from "./vault/reference-source.ts";
 import { readSessionNote, saveSessionNote } from "./vault/session-notes.ts";
 import { listStickerBacklinks } from "./vault/sticker-backlinks.ts";
+import { deleteStickerBacklinks } from "./vault/sticker-backlink-lifecycle.ts";
 import { dshViewerUrlForSurface, ensureDshWebViewer } from "./webviewer/adapter.ts";
 import { handleDshUrl, registerDshLinkInterceptor } from "./webviewer/deep-link.ts";
 import { resolveDshViewerUrl } from "./webviewer/launch-url.ts";
@@ -138,6 +140,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
       app: this.app,
       dshUrl: () => resolveDshViewerUrl(this.settings),
       surfaceId: this.settings.webViewerSurfaceId,
+      beforeOpen: (action) => this.prepareDshTarget(action),
       enqueue: (action) => this.bridge?.enqueue(action),
       onError: (error) => new Notice(error instanceof Error ? error.message : String(error)),
     });
@@ -149,6 +152,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
         app: this.app,
         dshUrl: () => resolveDshViewerUrl(this.settings),
         surfaceId: this.settings.webViewerSurfaceId,
+        beforeOpen: (action) => this.prepareDshTarget(action),
         enqueue: (action) => this.bridge?.enqueue(action),
       }).catch((error: unknown) => new Notice(error instanceof Error ? error.message : String(error)));
     });
@@ -368,8 +372,24 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
       app: this.app,
       dshUrl: () => resolveDshViewerUrl(this.settings),
       surfaceId: this.settings.webViewerSurfaceId,
+      beforeOpen: (action) => this.prepareDshTarget(action),
       enqueue: (action) => this.bridge?.enqueue(action),
     });
+  }
+
+  private async prepareDshTarget(action: DeepLinkAction): Promise<boolean> {
+    if (action.stickerId === undefined || action.quoteHash === undefined) return true;
+    const vault = this.vaultAdapter();
+    const note = await readSessionNote(vault, action.sessionId);
+    if (note.stickers.some((sticker) => sticker.stickerId === action.stickerId)) return true;
+    await deleteStickerBacklinks(vault, {
+      stickerId: action.stickerId,
+      sessionId: action.sessionId,
+      anchorId: action.anchorId,
+      quoteHash: action.quoteHash,
+    });
+    new Notice("贴纸已经删除，对应的 Obsidian 回链已清理");
+    return false;
   }
 
   private async openReferencesForMarker(rawMarker: string, chip: HTMLElement): Promise<void> {
@@ -493,6 +513,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
           await openNoteInMainMarkdownLeaf(new ObsidianMainMarkdownWorkspace(this.app), action);
         },
         onListStickerBacklinks: (target) => listStickerBacklinks(vault, target),
+        onDeleteStickerBacklinks: (target) => deleteStickerBacklinks(vault, target),
         onReadSessionNote: (sessionId) => readSessionNote(vault, sessionId),
         onSaveSessionNote: ({ document, expectedRevision }) => saveSessionNote(vault, document, expectedRevision),
       });

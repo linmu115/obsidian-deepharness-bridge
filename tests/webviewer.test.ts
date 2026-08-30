@@ -101,6 +101,25 @@ describe("Obsidian DSH Web Viewer adapter", () => {
     });
   });
 
+  it("does not reveal or reload DSH when Obsidian retires a deleted sticker link", async () => {
+    const existing = fakeLeaf("http://127.0.0.1:51882/");
+    const { app } = appWith([existing]);
+    const enqueue = vi.fn();
+    const beforeOpen = vi.fn(async () => false);
+
+    await handleDshUrl(
+      "obsidian://deepharness?session=session-demo&anchor=user-node-42&quoteHash=sha256%3A30101ebf&sticker=9bb3a80e-230d-44d1-a37c-f7b79d2bf315",
+      { app, dshUrl: "http://127.0.0.1:51882/", surfaceId: SURFACE_ID, enqueue, beforeOpen },
+    );
+
+    expect(beforeOpen).toHaveBeenCalledWith(expect.objectContaining({
+      stickerId: "9bb3a80e-230d-44d1-a37c-f7b79d2bf315",
+    }));
+    expect(app.workspace.revealLeaf).not.toHaveBeenCalled();
+    expect(existing.setViewState).not.toHaveBeenCalled();
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
   it("preserves the annotation identity needed to open the exact DSH reference", async () => {
     const { app } = appWith([fakeLeaf("http://127.0.0.1:51882/")]);
     const action = await handleDshUrl(
@@ -115,7 +134,8 @@ describe("Obsidian DSH Web Viewer adapter", () => {
     const value = dshViewerUrlForSurface("http://127.0.0.1:51882/?token=current-token", SURFACE_ID);
     const url = new URL(value);
     expect(url.searchParams.get("token")).toBe("current-token");
-    expect(url.searchParams.get("dshBridgeSurface")).toBe(SURFACE_ID);
+    expect(url.searchParams.get("dshBridgeSurface")).toBeNull();
+    expect(new URLSearchParams(url.hash.slice(1)).get("dshBridgeSurface")).toBe(SURFACE_ID);
   });
 
   it("reuses an existing loopback DSH webviewer leaf", async () => {
@@ -150,6 +170,12 @@ describe("Obsidian DSH Web Viewer adapter", () => {
       active: true,
       state: { url: targeted, title: "DeepSeek Harness", mode: "webview" },
     });
+
+    // Obsidian can report DSH's canonical clean URL after the launch-token
+    // redirect. The adapter must still remember that this live leaf was
+    // provisioned instead of reloading it on every logical-link click.
+    await ensureDshWebViewer(app, targeted);
+    expect(existing.setViewState).toHaveBeenCalledTimes(1);
   });
 
   it("creates a core webviewer tab when no matching DSH leaf exists", async () => {

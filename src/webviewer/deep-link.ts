@@ -7,6 +7,7 @@ export interface DeepLinkHandlerOptions {
   dshUrl: string | (() => string | Promise<string>);
   surfaceId: string;
   enqueue(action: DeepLinkAction): unknown;
+  beforeOpen?: (action: DeepLinkAction) => boolean | Promise<boolean>;
   createActionId?: () => string;
   onError?: (error: unknown) => void;
 }
@@ -17,6 +18,7 @@ export function parseDshUrl(value: string, createActionId: () => string = () => 
 
 export async function handleDshUrl(value: string, options: DeepLinkHandlerOptions): Promise<DeepLinkAction> {
   const action = { ...parseDshUrl(value, options.createActionId), targetSurfaceId: options.surfaceId };
+  if (await options.beforeOpen?.(action) === false) return action;
   const dshUrl = await (typeof options.dshUrl === "function" ? options.dshUrl() : options.dshUrl);
   await ensureDshWebViewer(options.app, dshViewerUrlForSurface(dshUrl, options.surfaceId));
   options.enqueue(action);

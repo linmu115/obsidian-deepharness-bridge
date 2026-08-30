@@ -89,6 +89,11 @@ export const stickerBacklinkSchema = z.object({
   excerpt: z.string(),
 });
 
+export const stickerBacklinkDeleteResultSchema = z.object({
+  notesChanged: z.number().int().nonnegative(),
+  linksRemoved: z.number().int().nonnegative(),
+});
+
 export const pendingCitationSchema = z.object({
   protocolVersion: z.literal(PROTOCOL_VERSION),
   type: z.literal("pending-citation"),
@@ -131,6 +136,7 @@ export type DeepLinkAction = z.infer<typeof deepLinkActionSchema>;
 export type OpenNoteAction = z.infer<typeof openNoteActionSchema>;
 export type StickerBacklinkTarget = z.infer<typeof stickerBacklinkTargetSchema>;
 export type StickerBacklink = z.infer<typeof stickerBacklinkSchema>;
+export type StickerBacklinkDeleteResult = z.infer<typeof stickerBacklinkDeleteResultSchema>;
 export type PendingCitation = z.infer<typeof pendingCitationSchema>;
 export type ResolvedCitation = z.infer<typeof resolvedCitationSchema>;
 export type SessionNoteDocument = z.infer<typeof sessionNoteDocumentSchema>;
