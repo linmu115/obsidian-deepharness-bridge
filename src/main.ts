@@ -103,7 +103,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
     registerEditorSelectionMenu(this, (selection) => this.queueReference(selection), captureOptions);
     registerReadingSelectionMenu(this, {
       markdownViewType: MarkdownView,
-      createMenu: () => new Menu(),
+      menuForEvent: (event) => Menu.forEvent(event),
       captureOptions,
       onCitation: (selection) => this.queueReference(selection),
     });
