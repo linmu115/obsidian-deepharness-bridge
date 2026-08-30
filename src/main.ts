@@ -29,6 +29,7 @@ import { registerEditorSelectionMenu, type NoteSelection } from "./selection/edi
 import { registerReadingSelectionMenu } from "./selection/reading-menu.ts";
 import {
   DEFAULT_SETTINGS,
+  ensureBridgeSurfaceId,
   normalizeLoopbackOrigin,
   validateBridgePort,
   type DeepHarnessBridgeSettings,
@@ -50,7 +51,7 @@ import { cleanupOwnedPendingMarker } from "./vault/pending-reference-cleanup.ts"
 import { refreshObsidianReference } from "./vault/reference-source.ts";
 import { readSessionNote, saveSessionNote } from "./vault/session-notes.ts";
 import { listStickerBacklinks } from "./vault/sticker-backlinks.ts";
-import { ensureDshWebViewer } from "./webviewer/adapter.ts";
+import { dshViewerUrlForSurface, ensureDshWebViewer } from "./webviewer/adapter.ts";
 import { handleDshUrl, registerDshLinkInterceptor } from "./webviewer/deep-link.ts";
 import { resolveDshViewerUrl } from "./webviewer/launch-url.ts";
 import { ObsidianMainMarkdownWorkspace } from "./workspace/obsidian-adapter.ts";
@@ -103,6 +104,10 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
       dshOrigin: normalizeLoopbackOrigin(this.data.settings.dshOrigin),
       dshLaunchLogPath: this.data.settings.dshLaunchLogPath?.trim() ?? "",
       bridgePort: validateBridgePort(this.data.settings.bridgePort),
+      webViewerSurfaceId: ensureBridgeSurfaceId(
+        this.data.settings.webViewerSurfaceId,
+        () => crypto.randomUUID(),
+      ),
     };
     this.data = { ...this.data, settings: this.settings };
     await this.persist();
@@ -132,6 +137,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
     registerDshLinkInterceptor(this, {
       app: this.app,
       dshUrl: () => resolveDshViewerUrl(this.settings),
+      surfaceId: this.settings.webViewerSurfaceId,
       enqueue: (action) => this.bridge?.enqueue(action),
       onError: (error) => new Notice(error instanceof Error ? error.message : String(error)),
     });
@@ -142,6 +148,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
       void handleDshUrl(value, {
         app: this.app,
         dshUrl: () => resolveDshViewerUrl(this.settings),
+        surfaceId: this.settings.webViewerSurfaceId,
         enqueue: (action) => this.bridge?.enqueue(action),
       }).catch((error: unknown) => new Notice(error instanceof Error ? error.message : String(error)));
     });
@@ -213,7 +220,10 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
   }
 
   private async queueReference(selection: NoteSelection): Promise<void> {
-    await ensureDshWebViewer(this.app, await resolveDshViewerUrl(this.settings));
+    await ensureDshWebViewer(
+      this.app,
+      dshViewerUrlForSurface(await resolveDshViewerUrl(this.settings), this.settings.webViewerSurfaceId),
+    );
     const {
       requiresBlockIdWrite: _requiresBlockIdWrite,
       blockIdOwnership,
@@ -357,6 +367,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
     }), {
       app: this.app,
       dshUrl: () => resolveDshViewerUrl(this.settings),
+      surfaceId: this.settings.webViewerSurfaceId,
       enqueue: (action) => this.bridge?.enqueue(action),
     });
   }

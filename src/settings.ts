@@ -7,6 +7,8 @@ export interface DeepHarnessBridgeSettings {
   dshLaunchLogPath: string;
   bridgePort: number;
   companionDirectory: string;
+  /** Stable routing identity for the DSH page hosted by Obsidian Web Viewer. */
+  webViewerSurfaceId: string;
 }
 
 export const DEFAULT_SETTINGS: DeepHarnessBridgeSettings = {
@@ -14,7 +16,18 @@ export const DEFAULT_SETTINGS: DeepHarnessBridgeSettings = {
   dshLaunchLogPath: "",
   bridgePort: DEFAULT_BRIDGE_PORT,
   companionDirectory: "DeepHarness",
+  webViewerSurfaceId: "",
 };
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export function ensureBridgeSurfaceId(value: string | undefined, create: () => string): string {
+  const current = value?.trim() ?? "";
+  if (UUID_PATTERN.test(current)) return current;
+  const generated = create();
+  if (!UUID_PATTERN.test(generated)) throw new Error("Generated DSH Web Viewer surface ID is not a UUID");
+  return generated;
+}
 
 export function normalizeLoopbackOrigin(value: string): string {
   const url = new URL(value);

@@ -44,6 +44,7 @@ import { ClientActionQueue, type QueuedBridgeMessage } from "./queue.ts";
 
 interface TokenRecord {
   clientId: string;
+  surfaceId?: string;
   origin: string;
   expiresAt: number;
 }
@@ -85,7 +86,23 @@ class HttpError extends Error {
   }
 }
 
-const handshakeSchema = z.object({ clientId: z.string().min(1).max(128) });
+const handshakeSchema = z.object({
+  clientId: z.string().min(1).max(128),
+  surfaceId: z.string().uuid().optional(),
+});
+const BRIDGE_CAPABILITIES = [
+  "reference-capture-v2",
+  "reference-refresh",
+  "backlink-commit-v2",
+  "reference-delete-v2",
+  "targeted-deep-link-v1",
+] as const;
+
+function visibleTo(authentication: TokenRecord, message: QueuedBridgeMessage): boolean {
+  return message.type !== "deep-link"
+    || message.targetSurfaceId === undefined
+    || message.targetSurfaceId === authentication.surfaceId;
+}
 const saveSessionNoteSchema = z.object({
   document: sessionNoteDocumentSchema,
   expectedRevision: z.string().min(1),
@@ -204,7 +221,7 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
           stickerProtocolVersion: STICKER_PROTOCOL_VERSION,
           bridgeOrigin: listeningOrigin,
           status: "ok",
-          capabilities: ["reference-capture-v2", "reference-refresh", "backlink-commit-v2", "reference-delete-v2"],
+          capabilities: BRIDGE_CAPABILITIES,
         }, allowedOrigin);
         return;
       }
@@ -216,15 +233,21 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
         }
         const token = randomBytes(32).toString("base64url");
         const expiresAt = now() + tokenTtlMs;
-        tokens.set(token, { clientId: input.clientId, origin: callerIdentity, expiresAt });
+        tokens.set(token, {
+          clientId: input.clientId,
+          ...(input.surfaceId === undefined ? {} : { surfaceId: input.surfaceId }),
+          origin: callerIdentity,
+          expiresAt,
+        });
         latestTokenExpiry = expiresAt;
         const v2 = requestUrl.pathname.startsWith("/v2/");
         json(response, 200, v2 ? {
           annotationProtocolVersion: ANNOTATION_PROTOCOL_VERSION,
           stickerProtocolVersion: STICKER_PROTOCOL_VERSION,
           bridgeOrigin: listeningOrigin,
-          capabilities: ["reference-capture-v2", "reference-refresh", "backlink-commit-v2", "reference-delete-v2"],
+          capabilities: BRIDGE_CAPABILITIES,
           clientId: input.clientId,
+          ...(input.surfaceId === undefined ? {} : { surfaceId: input.surfaceId }),
           token,
           expiresAt,
         } : { protocolVersion: PROTOCOL_VERSION, clientId: input.clientId, token, expiresAt }, allowedOrigin);
@@ -242,7 +265,11 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
         const afterText = requestUrl.searchParams.get("after") ?? "0";
         const after = Number(afterText);
         if (!Number.isInteger(after) || after < 0) throw new HttpError(400, "Action cursor must be a non-negative integer");
-        json(response, 200, queue.pending(authentication.clientId, after, (message) => message.type === "deep-link"), allowedOrigin);
+        json(response, 200, queue.pending(
+          authentication.clientId,
+          after,
+          (message) => message.type === "deep-link" && visibleTo(authentication, message),
+        ), allowedOrigin);
         return;
       }
 
@@ -251,7 +278,10 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
         const afterText = requestUrl.searchParams.get("after") ?? "0";
         const after = Number(afterText);
         if (!Number.isInteger(after) || after < 0) throw new HttpError(400, "Action cursor must be a non-negative integer");
-        json(response, 200, { queueId, ...queue.pending(authentication.clientId, after) }, allowedOrigin);
+        json(response, 200, {
+          queueId,
+          ...queue.pending(authentication.clientId, after, (message) => visibleTo(authentication, message)),
+        }, allowedOrigin);
         return;
       }
 
@@ -330,6 +360,10 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
       if (request.method === "POST" && ackMatch) {
         await readJsonBody(request, maxBodyBytes);
         const actionId = decodeURIComponent(ackMatch[1] ?? "");
+        const message = queue.message(actionId);
+        if (message?.type === "deep-link" && !visibleTo(authentication, message)) {
+          throw new HttpError(409, "Deep-link action belongs to another DSH surface");
+        }
         // Multiple DSH surfaces can observe the same one-shot command before
         // the first acknowledgement removes it. A later acknowledgement is
         // therefore an idempotent success, not an actionable 404.

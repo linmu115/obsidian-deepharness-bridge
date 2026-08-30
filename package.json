@@ -1,6 +1,6 @@
 {
   "name": "obsidian-deepharness-bridge",
-  "version": "0.3.17",
+  "version": "0.3.18",
   "private": true,
   "description": "Obsidian companion bridge for DeepSeek Harness conversations",
   "dshKnowledge": {

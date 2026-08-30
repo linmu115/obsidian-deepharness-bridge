@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { JSDOM } from "jsdom";
 
-import { ensureDshWebViewer } from "../src/webviewer/adapter.ts";
+import { dshViewerUrlForSurface, ensureDshWebViewer } from "../src/webviewer/adapter.ts";
 import { handleDshUrl, registerDshLinkInterceptor } from "../src/webviewer/deep-link.ts";
 import { buildObsidianDshLink, obsidianProtocolUrl } from "../src/logical-link.ts";
+
+const SURFACE_ID = "7b31f255-d087-4f8e-bdd6-d09a61860819";
 
 function fakeLeaf(url: string, title = "DeepSeek Harness", mode = "webview") {
   return {
@@ -69,7 +71,7 @@ describe("Obsidian DSH Web Viewer adapter", () => {
         registerDomEvent(element, type, callback, options) {
           element.addEventListener(type, callback, options);
         },
-      }, { app, dshUrl: "http://127.0.0.1:51882/", enqueue });
+      }, { app, dshUrl: "http://127.0.0.1:51882/", surfaceId: SURFACE_ID, enqueue });
 
       const event = new dom.window.MouseEvent("click", { bubbles: true, cancelable: true });
       dom.window.document.querySelector("#label")?.dispatchEvent(event);
@@ -78,6 +80,7 @@ describe("Obsidian DSH Web Viewer adapter", () => {
       expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({
         setId: "set-1",
         referenceId: "reference-1",
+        targetSurfaceId: SURFACE_ID,
       }));
     } finally {
       Object.assign(globalThis, { document: previousDocument, Element: previousElement });
@@ -89,11 +92,12 @@ describe("Obsidian DSH Web Viewer adapter", () => {
     const { app } = appWith([fakeLeaf("http://127.0.0.1:51882/")]);
     const action = await handleDshUrl(
       "obsidian://deepharness?session=session-demo&anchor=user-node-42&quoteHash=sha256%3A30101ebf&sticker=9bb3a80e-230d-44d1-a37c-f7b79d2bf315",
-      { app, dshUrl: "http://127.0.0.1:51882/", enqueue: vi.fn() },
+      { app, dshUrl: "http://127.0.0.1:51882/", surfaceId: SURFACE_ID, enqueue: vi.fn() },
     );
 
     expect(action).toMatchObject({
       stickerId: "9bb3a80e-230d-44d1-a37c-f7b79d2bf315",
+      targetSurfaceId: SURFACE_ID,
     });
   });
 
@@ -101,10 +105,17 @@ describe("Obsidian DSH Web Viewer adapter", () => {
     const { app } = appWith([fakeLeaf("http://127.0.0.1:51882/")]);
     const action = await handleDshUrl(
       "obsidian://deepharness?session=session-demo&anchor=user-node-42&setId=set-1&referenceId=reference-1",
-      { app, dshUrl: "http://127.0.0.1:51882/", enqueue: vi.fn() },
+      { app, dshUrl: "http://127.0.0.1:51882/", surfaceId: SURFACE_ID, enqueue: vi.fn() },
     );
 
-    expect(action).toMatchObject({ setId: "set-1", referenceId: "reference-1" });
+    expect(action).toMatchObject({ setId: "set-1", referenceId: "reference-1", targetSurfaceId: SURFACE_ID });
+  });
+
+  it("adds a stable routing identity without losing the DSH launch token", () => {
+    const value = dshViewerUrlForSurface("http://127.0.0.1:51882/?token=current-token", SURFACE_ID);
+    const url = new URL(value);
+    expect(url.searchParams.get("token")).toBe("current-token");
+    expect(url.searchParams.get("dshBridgeSurface")).toBe(SURFACE_ID);
   });
 
   it("reuses an existing loopback DSH webviewer leaf", async () => {
@@ -125,6 +136,20 @@ describe("Obsidian DSH Web Viewer adapter", () => {
 
     expect(existing.setViewState).not.toHaveBeenCalled();
     expect(app.workspace.revealLeaf).toHaveBeenCalledWith(existing);
+  });
+
+  it("reloads a same-origin Web Viewer once to install its dedicated routing identity", async () => {
+    const existing = fakeLeaf("http://127.0.0.1:51882/?token=old-token");
+    const { app } = appWith([existing]);
+    const targeted = dshViewerUrlForSurface("http://127.0.0.1:51882/?token=current-token", SURFACE_ID);
+
+    await ensureDshWebViewer(app, targeted);
+
+    expect(existing.setViewState).toHaveBeenCalledWith({
+      type: "webviewer",
+      active: true,
+      state: { url: targeted, title: "DeepSeek Harness", mode: "webview" },
+    });
   });
 
   it("creates a core webviewer tab when no matching DSH leaf exists", async () => {
@@ -194,6 +219,7 @@ describe("Obsidian DSH Web Viewer adapter", () => {
       {
         app,
         dshUrl: "http://127.0.0.1:51882/",
+        surfaceId: SURFACE_ID,
         enqueue,
         createActionId: () => "6f09f1be-5dc1-48e4-ac08-e3c05d70ac01",
       },
@@ -206,6 +232,7 @@ describe("Obsidian DSH Web Viewer adapter", () => {
       sessionId: "session-demo",
       anchorId: "user-node-42",
       quoteHash: "sha256:30101ebf",
+      targetSurfaceId: SURFACE_ID,
     });
   });
 
@@ -214,6 +241,7 @@ describe("Obsidian DSH Web Viewer adapter", () => {
     await expect(handleDshUrl("dsh://open/session/session-demo", {
       app,
       dshUrl: "http://127.0.0.1:51882/",
+      surfaceId: SURFACE_ID,
       enqueue: vi.fn(),
     })).rejects.toThrow(/anchor/i);
     await expect(ensureDshWebViewer(app, "https://example.com/")).rejects.toThrow(/loopback/i);
@@ -228,6 +256,7 @@ describe("Obsidian DSH Web Viewer adapter", () => {
     await handleDshUrl("dsh://open/session/session-demo?anchor=user-node-42", {
       app,
       dshUrl: () => dshUrl,
+      surfaceId: SURFACE_ID,
       enqueue: vi.fn(),
     });
 
@@ -240,6 +269,7 @@ describe("Obsidian DSH Web Viewer adapter", () => {
     const action = await handleDshUrl("dsh://open/session/session-demo?anchor=user-node-42", {
       app,
       dshUrl: "http://127.0.0.1:51882/",
+      surfaceId: SURFACE_ID,
       enqueue: vi.fn(),
       createActionId: () => "6f09f1be-5dc1-48e4-ac08-e3c05d70ac01",
     });

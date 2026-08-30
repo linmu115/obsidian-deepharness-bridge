@@ -23,6 +23,17 @@ export class WebViewerUnavailableError extends Error {
   }
 }
 
+export const DSH_BRIDGE_SURFACE_PARAMETER = "dshBridgeSurface";
+
+export function dshViewerUrlForSurface(dshUrl: string, surfaceId: string): string {
+  const target = loopbackUrl(dshUrl);
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(surfaceId)) {
+    throw new Error("DSH Web Viewer surface ID must be a UUID");
+  }
+  target.searchParams.set(DSH_BRIDGE_SURFACE_PARAMETER, surfaceId);
+  return target.href;
+}
+
 function loopbackUrl(value: string): URL {
   const url = new URL(value);
   if (url.protocol !== "http:" || (url.hostname !== "127.0.0.1" && url.hostname !== "localhost")) {
@@ -59,8 +70,12 @@ export async function ensureDshWebViewer(app: WebViewerApp, dshUrl: string): Pro
     ?? candidates[0];
   if (existing) {
     const state = leafState(existing);
-    const currentHref = state.url ? new URL(state.url).href : undefined;
+    const currentUrl = state.url ? new URL(state.url) : undefined;
+    const currentHref = currentUrl?.href;
     const needsWebviewMode = state.mode !== "webview";
+    const targetSurfaceId = target.searchParams.get(DSH_BRIDGE_SURFACE_PARAMETER);
+    const needsSurfaceRouting = targetSurfaceId !== null
+      && currentUrl?.searchParams.get(DSH_BRIDGE_SURFACE_PARAMETER) !== targetSurfaceId;
     if (needsWebviewMode && currentHref === target.href) {
       await existing.setViewState({
         type: "webviewer",
@@ -68,7 +83,7 @@ export async function ensureDshWebViewer(app: WebViewerApp, dshUrl: string): Pro
         state: { url: "about:blank", title: "DeepSeek Harness", mode: "webview" },
       });
     }
-    if (needsWebviewMode) {
+    if (needsWebviewMode || needsSurfaceRouting) {
       await existing.setViewState({
         type: "webviewer",
         active: true,

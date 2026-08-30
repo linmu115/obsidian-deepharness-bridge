@@ -60,6 +60,7 @@ export const deepLinkActionSchema = z.object({
   stickerId: z.string().uuid().optional(),
   setId: z.string().min(1).optional(),
   referenceId: z.string().min(1).optional(),
+  targetSurfaceId: z.string().uuid().optional(),
 });
 
 export const openNoteActionSchema = z.object({

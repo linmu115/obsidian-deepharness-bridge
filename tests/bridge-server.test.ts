@@ -5,6 +5,8 @@ import type { BacklinkCommitV2, DeepLinkAction, ReferenceDeleteCommitV2, Referen
 import { createObsidianReferenceCapture } from "../src/vault/reference-source.ts";
 
 const DSH_ORIGIN = "http://127.0.0.1:51882";
+const SURFACE_A = "7b31f255-d087-4f8e-bdd6-d09a61860819";
+const SURFACE_B = "a2e5d29d-d44f-4e8e-bf5d-fe209f016196";
 const openBridges: RunningBridge[] = [];
 
 afterEach(async () => {
@@ -39,17 +41,18 @@ async function handshake(bridge: RunningBridge, origin = DSH_ORIGIN): Promise<st
   return (await response.json() as { token: string }).token;
 }
 
-async function handshakeV2(bridge: RunningBridge, clientId = "dsh-web-v2"): Promise<string> {
+async function handshakeV2(bridge: RunningBridge, clientId = "dsh-web-v2", surfaceId?: string): Promise<string> {
   const response = await request(bridge, "/v2/handshake", {
     method: "POST",
     headers: { "content-type": "application/json", origin: DSH_ORIGIN },
-    body: JSON.stringify({ clientId }),
+    body: JSON.stringify({ clientId, ...(surfaceId === undefined ? {} : { surfaceId }) }),
   });
   expect(response.status).toBe(200);
   const body = await response.json() as { token: string; annotationProtocolVersion: number; capabilities: string[] };
   expect(body).toMatchObject({ annotationProtocolVersion: 2 });
   expect(body.capabilities).toEqual(expect.arrayContaining([
     "reference-capture-v2", "reference-refresh", "backlink-commit-v2", "reference-delete-v2",
+    "targeted-deep-link-v1",
   ]));
   return body.token;
 }
@@ -206,6 +209,40 @@ describe("loopback bridge server", () => {
       headers: authorized(secondToken),
     });
     expect(await pending.json()).toMatchObject({ cursor: 1, actions: [] });
+  });
+
+  it("delivers a targeted deep link only to its Obsidian Web Viewer surface", async () => {
+    const bridge = await start();
+    const targeted = { ...firstAction, targetSurfaceId: SURFACE_A };
+    bridge.enqueue(targeted);
+    const edgeToken = await handshakeV2(bridge, "dsh-edge");
+    const otherViewerToken = await handshakeV2(bridge, "dsh-other-viewer", SURFACE_B);
+    const obsidianViewerToken = await handshakeV2(bridge, "dsh-obsidian-viewer", SURFACE_A);
+
+    for (const token of [edgeToken, otherViewerToken]) {
+      const pending = await request(bridge, "/v2/actions/pending?after=0", { headers: authorized(token) });
+      expect(await pending.json()).toMatchObject({ cursor: 1, actions: [] });
+    }
+    const targetedPending = await request(bridge, "/v2/actions/pending?after=0", {
+      headers: authorized(obsidianViewerToken),
+    });
+    expect(await targetedPending.json()).toMatchObject({
+      cursor: 1,
+      actions: [{ cursor: 1, message: targeted }],
+    });
+
+    const wrongAck = await request(bridge, `/v1/actions/${targeted.actionId}/ack`, {
+      method: "POST",
+      headers: authorized(edgeToken, { "content-type": "application/json" }),
+      body: "{}",
+    });
+    expect(wrongAck.status).toBe(409);
+    const correctAck = await request(bridge, `/v1/actions/${targeted.actionId}/ack`, {
+      method: "POST",
+      headers: authorized(obsidianViewerToken, { "content-type": "application/json" }),
+      body: "{}",
+    });
+    expect(correctAck.status).toBe(200);
   });
 
   it("cancels queued navigation when its Obsidian reference is deleted", async () => {
