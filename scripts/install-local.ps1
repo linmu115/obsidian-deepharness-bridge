@@ -1,0 +1,83 @@
+[CmdletBinding()]
+param(
+  [Parameter(Mandatory = $true)]
+  [string]$VaultPath
+)
+
+$ErrorActionPreference = 'Stop'
+$pluginId = 'obsidian-deepharness-bridge'
+$sourceRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+$vaultRoot = [System.IO.Path]::GetFullPath($VaultPath)
+$configRoot = Join-Path $vaultRoot '.obsidian'
+$pluginsRoot = Join-Path $configRoot 'plugins'
+$targetRoot = Join-Path $pluginsRoot $pluginId
+$backupRoot = Join-Path $configRoot 'plugin-backups'
+$deploymentFiles = @(
+  'main.js',
+  'manifest.json',
+  'styles.css',
+  'versions.json',
+  'package.json',
+  'README.md',
+  'LICENSE',
+  'scripts/install-local.ps1'
+)
+$textFiles = @(
+  'manifest.json',
+  'styles.css',
+  'versions.json',
+  'package.json',
+  'README.md',
+  'LICENSE',
+  'scripts/install-local.ps1'
+)
+
+if (-not (Test-Path -LiteralPath $configRoot -PathType Container)) {
+  throw "Obsidian configuration directory was not found: $configRoot"
+}
+
+foreach ($name in $deploymentFiles) {
+  $artifact = Join-Path $sourceRoot $name
+  if (-not (Test-Path -LiteralPath $artifact -PathType Leaf)) {
+    throw "Build artifact was not found: $artifact"
+  }
+}
+
+if (-not (Test-Path -LiteralPath $pluginsRoot -PathType Container)) {
+  New-Item -ItemType Directory -Path $pluginsRoot | Out-Null
+}
+if (-not (Test-Path -LiteralPath $backupRoot -PathType Container)) {
+  New-Item -ItemType Directory -Path $backupRoot | Out-Null
+}
+
+if (Test-Path -LiteralPath $targetRoot -PathType Container) {
+  $installedVersion = 'unknown'
+  $installedManifest = Join-Path $targetRoot 'manifest.json'
+  if (Test-Path -LiteralPath $installedManifest -PathType Leaf) {
+    $installedVersion = (Get-Content -LiteralPath $installedManifest -Raw | ConvertFrom-Json).version
+  }
+  $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+  $backup = Join-Path $backupRoot "$pluginId-$installedVersion-$stamp"
+  Copy-Item -LiteralPath $targetRoot -Destination $backup -Recurse
+} else {
+  New-Item -ItemType Directory -Path $targetRoot | Out-Null
+}
+
+foreach ($name in $deploymentFiles) {
+  $source = Join-Path $sourceRoot $name
+  $target = Join-Path $targetRoot $name
+  $targetParent = Split-Path -Parent $target
+  if (-not (Test-Path -LiteralPath $targetParent -PathType Container)) {
+    New-Item -ItemType Directory -Path $targetParent -Force | Out-Null
+  }
+  if ($textFiles -contains $name) {
+    $content = [IO.File]::ReadAllText($source).Replace("`r`n", "`n").Replace("`r", "`n")
+    [IO.File]::WriteAllText($target, $content, [Text.UTF8Encoding]::new($false))
+  } else {
+    Copy-Item -LiteralPath $source -Destination $target -Force
+  }
+}
+
+$installed = Get-Content -LiteralPath (Join-Path $targetRoot 'manifest.json') -Raw | ConvertFrom-Json
+Write-Output "Installed $($installed.id) $($installed.version) to $targetRoot"
+Write-Output "Backups are stored outside the plugin scan directory: $backupRoot"

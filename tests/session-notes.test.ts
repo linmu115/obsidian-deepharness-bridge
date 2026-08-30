@@ -68,6 +68,29 @@ describe("session companion Markdown", () => {
     expect(output).toContain(sticker.stickerId);
   });
 
+  it("renders multiline sticker quotes as one managed callout title", async () => {
+    const vault = new MemoryVault();
+    const multiline = {
+      ...sticker,
+      quote: "第一行引用\n第二行引用",
+      markdown: "用户备注",
+    };
+    const document: SessionNoteDocument = {
+      protocolVersion: 1,
+      type: "session-note",
+      sessionId: "session-demo",
+      revision: contentRevision(""),
+      stickers: [multiline],
+    };
+
+    await saveSessionNote(vault, document, document.revision);
+    const output = vault.files.get(sessionNotePath(document.sessionId)) ?? "";
+
+    expect(output).toContain("> [!note]+ 第一行引用 第二行引用\n> 用户备注");
+    expect(output).not.toContain("\n第二行引用\n");
+    expect(parseSessionNote(output, document.sessionId).document.stickers).toEqual([multiline]);
+  });
+
   it("round-trips managed sticker blocks without rewriting user Markdown", () => {
     const original = `---\ntitle: 手写标题\n---\n\n自由正文\n\n${marker(sticker)}\n\n尾部正文\n`;
     const parsed = parseSessionNote(original, "session-demo");

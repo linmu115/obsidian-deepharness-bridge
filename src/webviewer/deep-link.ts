@@ -1,11 +1,13 @@
 import type { DeepLinkAction } from "../protocol.ts";
 import { parseDshLogicalLink } from "../logical-link.ts";
-import { ensureDshWebViewer, type WebViewerApp } from "./adapter.ts";
+import { dshViewerUrlForSurface, ensureDshWebViewer, type WebViewerApp } from "./adapter.ts";
 
 export interface DeepLinkHandlerOptions {
   app: WebViewerApp;
-  dshUrl: string | (() => string);
+  dshUrl: string | (() => string | Promise<string>);
+  surfaceId: string;
   enqueue(action: DeepLinkAction): unknown;
+  beforeOpen?: (action: DeepLinkAction) => boolean | Promise<boolean>;
   createActionId?: () => string;
   onError?: (error: unknown) => void;
 }
@@ -15,9 +17,10 @@ export function parseDshUrl(value: string, createActionId: () => string = () => 
 }
 
 export async function handleDshUrl(value: string, options: DeepLinkHandlerOptions): Promise<DeepLinkAction> {
-  const action = parseDshUrl(value, options.createActionId);
-  const dshUrl = typeof options.dshUrl === "function" ? options.dshUrl() : options.dshUrl;
-  await ensureDshWebViewer(options.app, dshUrl);
+  const action = { ...parseDshUrl(value, options.createActionId), targetSurfaceId: options.surfaceId };
+  if (await options.beforeOpen?.(action) === false) return action;
+  const dshUrl = await (typeof options.dshUrl === "function" ? options.dshUrl() : options.dshUrl);
+  await ensureDshWebViewer(options.app, dshViewerUrlForSurface(dshUrl, options.surfaceId));
   options.enqueue(action);
   return action;
 }
@@ -34,7 +37,9 @@ interface LinkInterceptorPlugin {
 export function registerDshLinkInterceptor(plugin: LinkInterceptorPlugin, options: DeepLinkHandlerOptions): void {
   plugin.registerDomEvent(document, "click", (event) => {
     const target = event.target;
-    const link = target instanceof Element ? target.closest<HTMLAnchorElement>("a[href^='dsh://']") : null;
+    const link = target instanceof Element
+      ? target.closest<HTMLAnchorElement>("a[href^='dsh://'], a[href^='obsidian://deepharness']")
+      : null;
     if (!link) return;
     event.preventDefault();
     event.stopPropagation();

@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import type { PendingCitation, ResolvedCitation } from "../src/protocol.ts";
-import type { BacklinkCommitV2 } from "../src/protocol.ts";
+import type { BacklinkCommitV2, ReferenceDeleteCommitV2 } from "../src/protocol.ts";
 import {
   commitReferenceBacklink,
+  deleteCommittedReferenceBacklink,
+  findCommittedReferenceNavigationTarget,
   insertResolvedCitation,
   removeResolvedCitation,
 } from "../src/vault/references.ts";
@@ -12,9 +14,12 @@ import { contentRevision, type VaultTextAdapter } from "../src/vault/session-not
 
 class MemoryVault implements VaultTextAdapter {
   readonly files = new Map<string, string>();
+  readonly reads: string[] = [];
   writes = 0;
+  listCalls = 0;
 
   async read(path: string): Promise<string | null> {
+    this.reads.push(path);
     return this.files.get(path) ?? null;
   }
 
@@ -30,6 +35,11 @@ class MemoryVault implements VaultTextAdapter {
       this.writes += 1;
     }
     return output;
+  }
+
+  async listMarkdownPaths(): Promise<string[]> {
+    this.listCalls += 1;
+    return [...this.files.keys()].filter((path) => path.endsWith(".md"));
   }
 }
 
@@ -128,6 +138,17 @@ describe("DSH backlink blocks", () => {
     expect(vault.writes).toBe(1);
     expect(vault.files.get(notePath)).toContain(`"referenceId":"${capture.referenceId}"`);
     expect(vault.files.get(notePath)).toContain(`"setId":"set-1"`);
+    await expect(findCommittedReferenceNavigationTarget(vault, capture.referenceId, notePath)).resolves.toEqual({
+      notePath,
+      referenceId: capture.referenceId,
+      setId: commit.setId,
+      profileId: commit.profileId,
+      sessionId: commit.sessionId,
+      userMessageId: commit.userMessageId,
+      userAnchorId: commit.userAnchorId,
+      userTextHash: commit.userTextHash,
+    });
+    expect(vault.listCalls).toBe(0);
   });
 
   it("rejects conflicting retries and concurrent note revisions without overwriting", async () => {
@@ -151,5 +172,110 @@ describe("DSH backlink blocks", () => {
     await expect(commitReferenceBacklink(secondVault, capture, commit, undefined, 200))
       .rejects.toMatchObject({ code: "REVISION_CONFLICT" });
     expect(secondVault.writes).toBe(0);
+  });
+
+  it("deletes the exact committed block after a note move and makes retries idempotent", async () => {
+    const vault = new MemoryVault();
+    vault.files.set(notePath, original);
+    const capture = createObsidianReferenceCapture({
+      actionId: "action-delete", referenceId: pending.citationId, vaultId: "vault-1", notePath,
+      blockId: "generation-definition", occurrence: 0, selectedText: pending.text, markdown: original, capturedAt: 100,
+    });
+    const commit: BacklinkCommitV2 = {
+      annotationProtocolVersion: 2, type: "backlink-commit", referenceId: capture.referenceId,
+      setId: "set-delete", profileId: "web", sessionId: "session-delete", userMessageId: "user-delete",
+      userAnchorId: "anchor-delete",
+      userTextHash: "sha256:30101ebf30101ebf30101ebf30101ebf30101ebf30101ebf30101ebf30101ebf",
+    };
+    await commitReferenceBacklink(vault, capture, commit, undefined, 200);
+    const movedPath = "归档/DSH维护引擎.md";
+    vault.files.set(movedPath, vault.files.get(notePath) ?? "");
+    vault.files.delete(notePath);
+    const deletion: ReferenceDeleteCommitV2 = {
+      annotationProtocolVersion: 2, type: "reference-delete-commit", referenceId: capture.referenceId,
+      profileId: commit.profileId, sessionId: commit.sessionId, setId: commit.setId, deletedAt: 300,
+    };
+
+    await expect(deleteCommittedReferenceBacklink(vault, deletion, notePath)).resolves.toMatchObject({
+      removed: true,
+      notePath: movedPath,
+    });
+    expect(vault.files.get(movedPath)).toContain("Generation 保存某个时刻完整、可部署的插件组合。");
+    expect(vault.files.get(movedPath)).not.toContain("dsh-reference");
+    await expect(deleteCommittedReferenceBacklink(vault, deletion, notePath)).resolves.toEqual({ removed: false });
+  });
+
+  it("uses a recorded backlink path without scanning unrelated Vault notes", async () => {
+    const vault = new MemoryVault();
+    vault.files.set(notePath, original);
+    const capture = createObsidianReferenceCapture({
+      actionId: "action-direct", referenceId: pending.citationId, vaultId: "vault-1", notePath,
+      blockId: "generation-definition", occurrence: 0, selectedText: pending.text, markdown: original, capturedAt: 100,
+    });
+    const commit: BacklinkCommitV2 = {
+      annotationProtocolVersion: 2, type: "backlink-commit", referenceId: capture.referenceId,
+      setId: "set-direct", profileId: "web", sessionId: "session-direct", userMessageId: "user-direct",
+      userAnchorId: "anchor-direct",
+      userTextHash: "sha256:30101ebf30101ebf30101ebf30101ebf30101ebf30101ebf30101ebf30101ebf",
+    };
+    const receipt = await commitReferenceBacklink(vault, capture, commit, undefined, 200);
+    vault.files.set("unrelated.md", "<!-- /dsh-reference -->\n");
+    vault.reads.length = 0;
+    vault.listCalls = 0;
+
+    await expect(deleteCommittedReferenceBacklink(vault, {
+      annotationProtocolVersion: 2, type: "reference-delete-commit", referenceId: capture.referenceId,
+      profileId: commit.profileId, sessionId: commit.sessionId, setId: commit.setId, deletedAt: 300,
+    }, receipt.notePath)).resolves.toMatchObject({ removed: true, notePath });
+    expect(vault.listCalls).toBe(0);
+    expect(vault.reads).toEqual([notePath]);
+  });
+
+  it("ignores an unrelated orphan closing marker while locating a moved backlink", async () => {
+    const vault = new MemoryVault();
+    vault.files.set(notePath, original);
+    const capture = createObsidianReferenceCapture({
+      actionId: "action-orphan", referenceId: pending.citationId, vaultId: "vault-1", notePath,
+      blockId: "generation-definition", occurrence: 0, selectedText: pending.text, markdown: original, capturedAt: 100,
+    });
+    const commit: BacklinkCommitV2 = {
+      annotationProtocolVersion: 2, type: "backlink-commit", referenceId: capture.referenceId,
+      setId: "set-orphan", profileId: "web", sessionId: "session-orphan", userMessageId: "user-orphan",
+      userAnchorId: "anchor-orphan",
+      userTextHash: "sha256:30101ebf30101ebf30101ebf30101ebf30101ebf30101ebf30101ebf30101ebf",
+    };
+    await commitReferenceBacklink(vault, capture, commit, undefined, 200);
+    const movedPath = "归档/移动后的引用.md";
+    const committed = vault.files.get(notePath) ?? "";
+    vault.files.delete(notePath);
+    vault.files.set("坏标记.md", "<!-- /dsh-reference -->\n");
+    vault.files.set(movedPath, committed);
+
+    await expect(deleteCommittedReferenceBacklink(vault, {
+      annotationProtocolVersion: 2, type: "reference-delete-commit", referenceId: capture.referenceId,
+      profileId: commit.profileId, sessionId: commit.sessionId, setId: commit.setId, deletedAt: 300,
+    }, notePath)).resolves.toMatchObject({ removed: true, notePath: movedPath });
+    expect(vault.files.get("坏标记.md")).toBe("<!-- /dsh-reference -->\n");
+  });
+
+  it("refuses to delete a generated block belonging to another DSH relation", async () => {
+    const vault = new MemoryVault();
+    vault.files.set(notePath, original);
+    const capture = createObsidianReferenceCapture({
+      actionId: "action-conflict", referenceId: pending.citationId, vaultId: "vault-1", notePath,
+      blockId: "generation-definition", occurrence: 0, selectedText: pending.text, markdown: original, capturedAt: 100,
+    });
+    const commit: BacklinkCommitV2 = {
+      annotationProtocolVersion: 2, type: "backlink-commit", referenceId: capture.referenceId,
+      setId: "set-real", profileId: "web", sessionId: "session-real", userMessageId: "user-real", userAnchorId: "anchor-real",
+      userTextHash: "sha256:30101ebf30101ebf30101ebf30101ebf30101ebf30101ebf30101ebf30101ebf",
+    };
+    await commitReferenceBacklink(vault, capture, commit, undefined, 200);
+    const before = vault.files.get(notePath);
+    await expect(deleteCommittedReferenceBacklink(vault, {
+      annotationProtocolVersion: 2, type: "reference-delete-commit", referenceId: capture.referenceId,
+      profileId: commit.profileId, sessionId: commit.sessionId, setId: "set-other", deletedAt: 300,
+    }, notePath)).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+    expect(vault.files.get(notePath)).toBe(before);
   });
 });

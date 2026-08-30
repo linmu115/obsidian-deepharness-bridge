@@ -8,6 +8,8 @@ export {
   ObsidianReferenceCaptureV2Schema,
   ReferenceClaimV2Schema,
   ReferenceDiscardV2Schema,
+  ReferenceDeleteCommitV2Schema,
+  ReferenceDeleteRequestV2Schema,
   ReferenceRefreshRequestV2Schema,
   ReferenceRefreshResultV2Schema,
   backlinkCommitDigest,
@@ -23,6 +25,8 @@ export type {
   ObsidianReferenceCaptureV2,
   ReferenceClaimV2,
   ReferenceDiscardV2,
+  ReferenceDeleteCommitV2,
+  ReferenceDeleteRequestV2,
   ReferenceRefreshRequestV2,
   ReferenceRefreshResultV2,
 } from "dsh-annotation-core/protocol";
@@ -53,6 +57,10 @@ export const deepLinkActionSchema = z.object({
   sessionId: z.string().min(1),
   anchorId: z.string().min(1),
   quoteHash: z.string().optional(),
+  stickerId: z.string().uuid().optional(),
+  setId: z.string().min(1).optional(),
+  referenceId: z.string().min(1).optional(),
+  targetSurfaceId: z.string().uuid().optional(),
 });
 
 export const openNoteActionSchema = z.object({
@@ -79,6 +87,11 @@ export const stickerBacklinkSchema = z.object({
   blockId: z.string().min(1).optional(),
   heading: z.string().min(1).optional(),
   excerpt: z.string(),
+});
+
+export const stickerBacklinkDeleteResultSchema = z.object({
+  notesChanged: z.number().int().nonnegative(),
+  linksRemoved: z.number().int().nonnegative(),
 });
 
 export const pendingCitationSchema = z.object({
@@ -123,6 +136,7 @@ export type DeepLinkAction = z.infer<typeof deepLinkActionSchema>;
 export type OpenNoteAction = z.infer<typeof openNoteActionSchema>;
 export type StickerBacklinkTarget = z.infer<typeof stickerBacklinkTargetSchema>;
 export type StickerBacklink = z.infer<typeof stickerBacklinkSchema>;
+export type StickerBacklinkDeleteResult = z.infer<typeof stickerBacklinkDeleteResultSchema>;
 export type PendingCitation = z.infer<typeof pendingCitationSchema>;
 export type ResolvedCitation = z.infer<typeof resolvedCitationSchema>;
 export type SessionNoteDocument = z.infer<typeof sessionNoteDocumentSchema>;

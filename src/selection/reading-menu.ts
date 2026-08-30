@@ -21,6 +21,10 @@ interface ProcessVaultLike {
   process(file: TFile, callback: (content: string) => string): Promise<string>;
 }
 
+interface ReadingDocumentLike {
+  getSelection(): SelectionLike | null;
+}
+
 function normalize(value: string): string { return value.replace(/\r\n?/g, "\n").normalize("NFC").trim(); }
 
 function headingBefore(source: string, offset: number): string | undefined {
@@ -45,11 +49,33 @@ function blockIdFromDom(node: unknown): string | undefined {
     dataset?: { blockId?: string };
   };
   const element = typeof candidate.closest === "function" ? candidate : candidate.parentElement as typeof candidate | undefined;
-  const block = element && typeof element.closest === "function"
-    ? element.closest("[data-block-id], [id]") as typeof candidate | null
-    : null;
-  const raw = block?.dataset?.blockId ?? block?.getAttribute?.("data-block-id") ?? block?.getAttribute?.("id") ?? undefined;
-  return raw?.replace(/^block-/, "") || undefined;
+  if (!element || typeof element.closest !== "function") return undefined;
+
+  // The Bridge's reading post-processor replaces a trailing ^dsh-note marker
+  // with a compact chip. Obsidian 1.13 does not expose that block ID on the
+  // paragraph itself, so recover it from the chip in the same rendered block.
+  const semanticBlock = element.closest("p, li, blockquote, h1, h2, h3, h4, h5, h6") as {
+    querySelector?: (selector: string) => unknown;
+  } | null;
+  const ownedChip = semanticBlock?.querySelector?.("[data-dsh-block-id]") as {
+    dataset?: { dshBlockId?: string };
+    getAttribute?: (name: string) => string | null;
+  } | null;
+  const ownedMarker = ownedChip?.dataset?.dshBlockId ?? ownedChip?.getAttribute?.("data-dsh-block-id") ?? undefined;
+  const ownedBlockId = ownedMarker?.replace(/^\^/, "");
+  if (ownedBlockId && /^[A-Za-z0-9-]+$/.test(ownedBlockId)) return ownedBlockId;
+
+  // Obsidian's rendered Markdown block is the authoritative anchor. A child
+  // decoration may also have an unrelated `id`, so a combined
+  // `[data-block-id], [id]` selector can stop at the wrong element and make a
+  // repeated quote impossible to resolve after the first DSH reference.
+  const dataBlock = element.closest("[data-block-id]") as typeof candidate | null;
+  const dataBlockId = dataBlock?.dataset?.blockId ?? dataBlock?.getAttribute?.("data-block-id") ?? undefined;
+  if (dataBlockId && /^[A-Za-z0-9-]+$/.test(dataBlockId)) return dataBlockId;
+
+  const idBlock = element.closest('[id^="block-"]') as typeof candidate | null;
+  const id = idBlock?.getAttribute?.("id")?.replace(/^block-/, "");
+  return id && /^[A-Za-z0-9-]+$/.test(id) ? id : undefined;
 }
 
 function lineForOffset(source: string, offset: number): { start: number; end: number; text: string } {
@@ -142,20 +168,35 @@ export async function ensureReadingBlockId(
 
 export interface ReadingMenuOptions {
   markdownViewType: Constructor<MarkdownView>;
-  createMenu(): Menu;
+  /** The document is injectable so the event contract can be tested without a browser global. */
+  document?: ReadingDocumentLike;
+  /** Return Obsidian's not-yet-shown menu for this context-menu event. */
+  menuForEvent(event: MouseEvent): Menu;
+  copyText?(text: string): Promise<void> | void;
   captureOptions?(): SelectionCaptureOptions;
   onCitation(selection: NoteSelection): Promise<void>;
 }
 
 export function registerReadingSelectionMenu(plugin: Plugin, options: ReadingMenuOptions): void {
-  plugin.registerDomEvent(document, "contextmenu", (event) => {
+  const ownerDocument = options.document ?? document;
+  plugin.registerDomEvent(ownerDocument as Document, "contextmenu", (event) => {
     const view = plugin.app.workspace.getActiveViewOfType(options.markdownViewType);
-    const selection = document.getSelection();
+    const selection = ownerDocument.getSelection();
     if (!view || !selection) return;
     const captured = captureReadingSelection(view, selection, options.captureOptions?.());
     if (!captured) return;
-    event.preventDefault();
-    const menu = options.createMenu();
+    const menu = options.menuForEvent(event);
+    // Calling Menu.forEvent intentionally replaces Electron's native
+    // selection menu. Re-add its Copy action, then append the Bridge action;
+    // every other plugin calling Menu.forEvent(event) receives the same shared
+    // menu and can keep contributing its own entries.
+    menu.addItem((item) => item
+      .setTitle("复制")
+      .setIcon("copy")
+      .onClick(async () => {
+        if (options.copyText !== undefined) await options.copyText(captured.source.selectedText);
+        else await navigator.clipboard.writeText(captured.source.selectedText);
+      }));
     menu.addItem((item) => item
       .setTitle("引用到 DSH")
       .setIcon("quote")
@@ -165,6 +206,9 @@ export function registerReadingSelectionMenu(plugin: Plugin, options: ReadingMen
         const ready = await ensureReadingBlockId(plugin.app.vault, file, captured);
         await options.onCitation(ready);
       }));
-    menu.showAtMouseEvent(event);
-  });
+  // Obsidian resolves and shows its event-bound menu from a bubble listener.
+  // Observe in capture phase so our item is present before the host displays
+  // that same Menu; a document bubble listener is too late (or is skipped when
+  // the host stops propagation), leaving only the native Copy item.
+  }, { capture: true });
 }

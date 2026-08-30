@@ -10,6 +10,8 @@ import {
   ObsidianReferenceCaptureV2Schema,
   ReferenceClaimV2Schema,
   ReferenceDiscardV2Schema,
+  ReferenceDeleteCommitV2Schema,
+  ReferenceDeleteRequestV2Schema,
   ReferenceRefreshRequestV2Schema,
   ReferenceRefreshResultV2Schema,
   STICKER_PROTOCOL_VERSION,
@@ -18,16 +20,19 @@ import {
   PROTOCOL_VERSION,
   sessionNoteDocumentSchema,
   stickerBacklinkSchema,
+  stickerBacklinkDeleteResultSchema,
   stickerBacklinkTargetSchema,
   type OpenNoteAction,
   type BacklinkCommitV2,
   type BacklinkReceiptV2,
   type ReferenceClaimV2,
   type ReferenceDiscardV2,
+  type ReferenceDeleteCommitV2,
   type ReferenceRefreshRequestV2,
   type ReferenceRefreshResultV2,
   type SessionNoteDocument,
   type StickerBacklink,
+  type StickerBacklinkDeleteResult,
   type StickerBacklinkTarget,
 } from "../protocol.ts";
 import {
@@ -41,6 +46,7 @@ import { ClientActionQueue, type QueuedBridgeMessage } from "./queue.ts";
 
 interface TokenRecord {
   clientId: string;
+  surfaceId?: string;
   origin: string;
   expiresAt: number;
 }
@@ -62,10 +68,12 @@ export interface BridgeServerOptions {
   onReadSessionNote?: (sessionId: string) => Promise<SessionNoteDocument | null>;
   onSaveSessionNote?: (request: SaveSessionNoteRequest) => Promise<{ revision: string }>;
   onListStickerBacklinks?: (target: StickerBacklinkTarget) => Promise<StickerBacklink[]>;
+  onDeleteStickerBacklinks?: (target: StickerBacklinkTarget) => Promise<StickerBacklinkDeleteResult>;
   onClaimReference?: (claim: ReferenceClaimV2) => Promise<void>;
   onRefreshReference?: (request: ReferenceRefreshRequestV2) => Promise<ReferenceRefreshResultV2>;
   onDiscardReference?: (request: ReferenceDiscardV2) => Promise<void>;
   onCommitBacklink?: (commit: BacklinkCommitV2) => Promise<BacklinkReceiptV2>;
+  onDeleteCommittedReference?: (commit: ReferenceDeleteCommitV2) => Promise<void>;
 }
 
 export interface RunningBridge {
@@ -81,7 +89,24 @@ class HttpError extends Error {
   }
 }
 
-const handshakeSchema = z.object({ clientId: z.string().min(1).max(128) });
+const handshakeSchema = z.object({
+  clientId: z.string().min(1).max(128),
+  surfaceId: z.string().uuid().optional(),
+});
+const BRIDGE_CAPABILITIES = [
+  "reference-capture-v2",
+  "reference-refresh",
+  "backlink-commit-v2",
+  "reference-delete-v2",
+  "targeted-deep-link-v1",
+  "sticker-backlink-delete-v1",
+] as const;
+
+function visibleTo(authentication: TokenRecord, message: QueuedBridgeMessage): boolean {
+  return message.type !== "deep-link"
+    || message.targetSurfaceId === undefined
+    || message.targetSurfaceId === authentication.surfaceId;
+}
 const saveSessionNoteSchema = z.object({
   document: sessionNoteDocumentSchema,
   expectedRevision: z.string().min(1),
@@ -160,6 +185,7 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
   if (!Number.isInteger(maxBodyBytes) || maxBodyBytes < 1) throw new Error("Maximum body size must be a positive integer");
 
   const queue = new ClientActionQueue();
+  const queueId = randomBytes(16).toString("hex");
   const tokens = new Map<string, TokenRecord>();
   const referenceClaims = new Map<string, ReferenceClaimV2>();
   const inMemoryNotes = new Map<string, SessionNoteDocument>();
@@ -199,7 +225,7 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
           stickerProtocolVersion: STICKER_PROTOCOL_VERSION,
           bridgeOrigin: listeningOrigin,
           status: "ok",
-          capabilities: ["reference-capture-v2", "reference-refresh", "backlink-commit-v2"],
+          capabilities: BRIDGE_CAPABILITIES,
         }, allowedOrigin);
         return;
       }
@@ -211,15 +237,21 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
         }
         const token = randomBytes(32).toString("base64url");
         const expiresAt = now() + tokenTtlMs;
-        tokens.set(token, { clientId: input.clientId, origin: callerIdentity, expiresAt });
+        tokens.set(token, {
+          clientId: input.clientId,
+          ...(input.surfaceId === undefined ? {} : { surfaceId: input.surfaceId }),
+          origin: callerIdentity,
+          expiresAt,
+        });
         latestTokenExpiry = expiresAt;
         const v2 = requestUrl.pathname.startsWith("/v2/");
         json(response, 200, v2 ? {
           annotationProtocolVersion: ANNOTATION_PROTOCOL_VERSION,
           stickerProtocolVersion: STICKER_PROTOCOL_VERSION,
           bridgeOrigin: listeningOrigin,
-          capabilities: ["reference-capture-v2", "reference-refresh", "backlink-commit-v2"],
+          capabilities: BRIDGE_CAPABILITIES,
           clientId: input.clientId,
+          ...(input.surfaceId === undefined ? {} : { surfaceId: input.surfaceId }),
           token,
           expiresAt,
         } : { protocolVersion: PROTOCOL_VERSION, clientId: input.clientId, token, expiresAt }, allowedOrigin);
@@ -237,7 +269,11 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
         const afterText = requestUrl.searchParams.get("after") ?? "0";
         const after = Number(afterText);
         if (!Number.isInteger(after) || after < 0) throw new HttpError(400, "Action cursor must be a non-negative integer");
-        json(response, 200, queue.pending(authentication.clientId, after, (message) => message.type === "deep-link"), allowedOrigin);
+        json(response, 200, queue.pending(
+          authentication.clientId,
+          after,
+          (message) => message.type === "deep-link" && visibleTo(authentication, message),
+        ), allowedOrigin);
         return;
       }
 
@@ -246,7 +282,10 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
         const afterText = requestUrl.searchParams.get("after") ?? "0";
         const after = Number(afterText);
         if (!Number.isInteger(after) || after < 0) throw new HttpError(400, "Action cursor must be a non-negative integer");
-        json(response, 200, queue.pending(authentication.clientId, after), allowedOrigin);
+        json(response, 200, {
+          queueId,
+          ...queue.pending(authentication.clientId, after, (message) => visibleTo(authentication, message)),
+        }, allowedOrigin);
         return;
       }
 
@@ -303,6 +342,17 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
         return;
       }
 
+      const deleteCommitMatch = /^\/v2\/references\/([^/]+)\/delete-commit$/.exec(requestUrl.pathname);
+      if (request.method === "POST" && deleteCommitMatch) {
+        const referenceId = decodeURIComponent(deleteCommitMatch[1] ?? "");
+        const input = ReferenceDeleteCommitV2Schema.parse(await readJsonBody(request, maxBodyBytes));
+        if (input.referenceId !== referenceId) throw new HttpError(400, "Reference ID does not match request path");
+        if (options.onDeleteCommittedReference === undefined) throw new HttpError(501, "Reference deletion is unavailable");
+        await options.onDeleteCommittedReference(input);
+        json(response, 200, { deleted: true, referenceId }, allowedOrigin);
+        return;
+      }
+
       if (request.method === "POST" && requestUrl.pathname === "/v2/obsidian/open-note") {
         const action = openNoteActionSchema.parse(await readJsonBody(request, maxBodyBytes));
         await options.onOpenNote?.(action);
@@ -314,8 +364,15 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
       if (request.method === "POST" && ackMatch) {
         await readJsonBody(request, maxBodyBytes);
         const actionId = decodeURIComponent(ackMatch[1] ?? "");
-        if (!queue.acknowledge(authentication.clientId, actionId)) throw new HttpError(404, "Action was not found");
-        json(response, 200, { acknowledged: true, actionId }, allowedOrigin);
+        const message = queue.message(actionId);
+        if (message?.type === "deep-link" && !visibleTo(authentication, message)) {
+          throw new HttpError(409, "Deep-link action belongs to another DSH surface");
+        }
+        // Multiple DSH surfaces can observe the same one-shot command before
+        // the first acknowledgement removes it. A later acknowledgement is
+        // therefore an idempotent success, not an actionable 404.
+        const acknowledged = queue.acknowledge(authentication.clientId, actionId);
+        json(response, 200, { acknowledged, actionId }, allowedOrigin);
         return;
       }
 
@@ -332,6 +389,15 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
           await (options.onListStickerBacklinks?.(target) ?? Promise.resolve([])),
         );
         json(response, 200, { backlinks }, allowedOrigin);
+        return;
+      }
+
+      if (request.method === "POST" && requestUrl.pathname === "/v1/sticker-backlinks/delete") {
+        const target = stickerBacklinkTargetSchema.parse(await readJsonBody(request, maxBodyBytes));
+        const result = stickerBacklinkDeleteResultSchema.parse(
+          await (options.onDeleteStickerBacklinks?.(target) ?? Promise.resolve({ notesChanged: 0, linksRemoved: 0 })),
+        );
+        json(response, 200, result, allowedOrigin);
         return;
       }
 
@@ -390,8 +456,13 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
     },
     enqueue(message) {
       if (message.type === "reference-capture") return queue.enqueue(ObsidianReferenceCaptureV2Schema.parse(message));
+      if (message.type === "reference-delete-request") {
+        const deletion = ReferenceDeleteRequestV2Schema.parse(message);
+        queue.cancelReferenceDeepLinks(deletion.referenceId);
+        return queue.enqueue(deletion);
+      }
       const legacy = parseBridgeMessage(message);
-      if (legacy.type !== "deep-link") throw new TypeError("Only deep links and v2 reference captures are queueable");
+      if (legacy.type !== "deep-link") throw new TypeError("Only deep links, reference captures and reference deletions are queueable");
       return queue.enqueue(legacy as QueuedBridgeMessage);
     },
     async close() {

@@ -1,6 +1,6 @@
-import type { DeepLinkAction, ObsidianReferenceCaptureV2, ReferenceClaimV2 } from "../protocol.ts";
+import type { DeepLinkAction, ObsidianReferenceCaptureV2, ReferenceClaimV2, ReferenceDeleteRequestV2 } from "../protocol.ts";
 
-export type QueuedBridgeMessage = DeepLinkAction | ObsidianReferenceCaptureV2;
+export type QueuedBridgeMessage = DeepLinkAction | ObsidianReferenceCaptureV2 | ReferenceDeleteRequestV2;
 
 export interface QueuedAction {
   cursor: number;
@@ -22,6 +22,14 @@ export class ClientActionQueue {
     const id = messageId(message);
     const existing = this.#entries.find((entry) => messageId(entry.message) === id);
     if (existing) return existing.cursor;
+    if (message.type === "deep-link") {
+      // A navigation request represents the user's latest destination, not a
+      // durable job. Retaining older requests makes a newly mounted DSH page
+      // replay every historical click and repeatedly pull the user back.
+      for (let index = this.#entries.length - 1; index >= 0; index -= 1) {
+        if (this.#entries[index]!.message.type === "deep-link") this.#entries.splice(index, 1);
+      }
+    }
     const cursor = ++this.#cursor;
     this.#entries.push({ cursor, message, acknowledgedBy: new Set() });
     return cursor;
@@ -46,10 +54,29 @@ export class ClientActionQueue {
   }
 
   acknowledge(clientId: string, id: string): boolean {
-    const entry = this.#entries.find((candidate) => messageId(candidate.message) === id);
-    if (!entry) return false;
+    const index = this.#entries.findIndex((candidate) => messageId(candidate.message) === id);
+    if (index < 0) return false;
+    const entry = this.#entries[index]!;
+    // Navigation and deletion are one-shot commands. Once their owning
+    // consumer completes them, remove them so a freshly mounted DSH client
+    // cannot replay historical UI side effects under a new client ID.
+    if (entry.message.type === "deep-link" || entry.message.type === "reference-delete-request") {
+      this.#entries.splice(index, 1);
+      return true;
+    }
     entry.acknowledgedBy.add(clientId);
     return true;
+  }
+
+  cancelReferenceDeepLinks(referenceId: string): number {
+    let removed = 0;
+    for (let index = this.#entries.length - 1; index >= 0; index -= 1) {
+      const message = this.#entries[index]!.message;
+      if (message.type !== "deep-link" || message.referenceId !== referenceId) continue;
+      this.#entries.splice(index, 1);
+      removed += 1;
+    }
+    return removed;
   }
 
   message(id: string): QueuedBridgeMessage | undefined {

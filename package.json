@@ -1,6 +1,6 @@
 {
   "name": "obsidian-deepharness-bridge",
-  "version": "0.2.2",
+  "version": "0.3.21",
   "private": true,
   "description": "Obsidian companion bridge for DeepSeek Harness conversations",
   "dshKnowledge": {
@@ -45,14 +45,16 @@
     "manifest.json",
     "versions.json",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "scripts"
   ],
   "scripts": {
     "build": "tsdown --config-loader unrun --config tsdown.config.ts",
     "prepack": "pnpm build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
-    "check": "pnpm typecheck && pnpm test && pnpm build && pnpm pack --dry-run --json"
+    "check": "pnpm typecheck && pnpm test && pnpm build && pnpm pack --dry-run --json",
+    "package:companion": "node scripts/package-companion.mjs"
   },
   "dependencies": {
     "zod": "^4.4.3"
@@ -60,9 +62,12 @@
   "devDependencies": {
     "@codemirror/state": "6.5.0",
     "@codemirror/view": "6.38.6",
+    "@types/jsdom": "21.1.7",
     "@types/node": "^24.3.0",
-    "dsh-annotation-core": "https://codeload.github.com/linmu115/dsh-annotation-core/tar.gz/99616f128d7beb175b023714ed906e976ac6f827",
+    "dsh-annotation-core": "git+https://github.com/linmu115/dsh-annotation-core.git#codex/bidirectional-reference-delete",
+    "jsdom": "26.1.0",
     "obsidian": "^1.13.1",
+    "tar": "^7.5.1",
     "tsdown": "^0.22.14",
     "typescript": "^5.9.3",
     "unrun": "^0.3.1",

@@ -1,7 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { JSDOM } from "jsdom";
+import { describe, expect, it, vi } from "vitest";
 
 import {
+  collectManagedDshReferenceBlocks,
   collectCompactDshBlockIds,
+  compactRenderedDshBlockIds,
+  hideRenderedDshReferenceBlocks,
   shouldCompactDshBlockIds,
 } from "../src/ui/block-id-display.ts";
 
@@ -37,5 +41,67 @@ describe("compact DSH block ID display", () => {
   it("keeps source mode raw and compacts only live preview", () => {
     expect(shouldCompactDshBlockIds(false)).toBe(false);
     expect(shouldCompactDshBlockIds(true)).toBe(true);
+  });
+
+  it("finds complete managed reference blocks so live preview can hide their source", () => {
+    const markdown = [
+      "正文。 ^dsh-note-01234567",
+      "",
+      '<!-- dsh-reference:{"referenceId":"reference-1"} -->',
+      "> [!dsh-reference]",
+      "> [打开 DSH 会话](obsidian://deepharness?session=session-1)",
+      "> 引用内容：正文。",
+      "> ^dsh-ref-reference",
+      "<!-- /dsh-reference -->",
+      "",
+      "后文。",
+    ].join("\n");
+    const start = markdown.indexOf("<!-- dsh-reference:");
+    const end = markdown.indexOf("<!-- /dsh-reference -->") + "<!-- /dsh-reference -->".length;
+
+    expect(collectManagedDshReferenceBlocks(markdown)).toEqual([{ from: start, to: end }]);
+  });
+
+  it("removes only managed DSH reference callouts in reading mode", () => {
+    const dom = new JSDOM([
+      '<div id="root">',
+      '  <div class="callout" data-callout="dsh-reference">托管引用</div>',
+      '  <div class="callout" data-callout="note">用户笔记</div>',
+      "</div>",
+    ].join(""));
+    const root = dom.window.document.querySelector<HTMLElement>("#root");
+
+    expect(root).not.toBeNull();
+    expect(hideRenderedDshReferenceBlocks(root as HTMLElement)).toBe(1);
+    expect(root?.querySelector('[data-callout="dsh-reference"]')).toBeNull();
+    expect(root?.querySelector('[data-callout="note"]')?.textContent).toBe("用户笔记");
+  });
+
+  it("opens from the chip body and deletes only from the dedicated control", () => {
+    const dom = new JSDOM('<div id="root">被引用的段落。 ^dsh-note-01234567</div>', {
+      url: "https://obsidian.local/note",
+    });
+    const previous = globalThis.NodeFilter;
+    Object.assign(globalThis, { NodeFilter: dom.window.NodeFilter });
+    try {
+      const root = dom.window.document.querySelector<HTMLElement>("#root");
+      const onOpen = vi.fn();
+      const onDelete = vi.fn();
+      expect(root).not.toBeNull();
+      expect(compactRenderedDshBlockIds(root as HTMLElement, { onOpen, onDelete })).toBe(1);
+      const chip = root?.querySelector<HTMLElement>(".dsh-block-id-chip");
+      expect(chip?.getAttribute("role")).toBe("link");
+      chip?.click();
+      expect(onOpen).toHaveBeenCalledWith("^dsh-note-01234567", chip);
+      expect(onDelete).not.toHaveBeenCalled();
+      const button = root?.querySelector<HTMLButtonElement>(".dsh-block-id-delete");
+      expect(button?.getAttribute("aria-label")).toBe("删除 DSH 引用");
+      button?.click();
+      expect(onDelete).toHaveBeenCalledWith("^dsh-note-01234567");
+      expect(onOpen).toHaveBeenCalledTimes(1);
+      expect(root?.querySelector(".dsh-block-id-chip")).toBeNull();
+    } finally {
+      Object.assign(globalThis, { NodeFilter: previous });
+    }
   });
 });

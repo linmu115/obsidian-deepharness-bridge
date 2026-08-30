@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { captureEditorSelection } from "../src/selection/editor-menu.ts";
-import { captureReadingSelection } from "../src/selection/reading-menu.ts";
+import { captureReadingSelection, registerReadingSelectionMenu } from "../src/selection/reading-menu.ts";
 import { documentHash, selectedTextHash } from "../src/protocol.ts";
 
 class FakeEditor {
@@ -127,5 +127,135 @@ describe("Obsidian selection capture", () => {
       getRangeAt: () => ({ commonAncestorContainer: previewNode }),
     };
     expect(captureReadingSelection(view, selection, { vaultId: "vault-1" })).toBeNull();
+  });
+
+  it("uses the nearest rendered block ID after a committed reference duplicates the quote", () => {
+    const markerChip = {
+      dataset: { dshBlockId: "^original-paragraph" },
+      getAttribute: (name: string) => name === "data-dsh-block-id" ? "^original-paragraph" : null,
+    };
+    const paragraph = {
+      querySelector: (selector: string) => selector === "[data-dsh-block-id]" ? markerChip : null,
+    };
+    const previewText = {
+      closest: (selector: string) => selector.startsWith("p, li") ? paragraph : null,
+    };
+    const source = [
+      "可重复引用的原文。 ^original-paragraph",
+      "",
+      "> [!dsh-reference] DSH 引用",
+      "> 可重复引用的原文。",
+      "",
+    ].join("\n");
+    const view = {
+      file: { path: "重复引用.md" },
+      containerEl: { contains: (node: unknown) => node === previewText },
+      getViewData: () => source,
+    };
+    const selection = {
+      rangeCount: 1,
+      toString: () => "可重复引用的原文。",
+      getRangeAt: () => ({ commonAncestorContainer: previewText }),
+    };
+
+    expect(captureReadingSelection(view, selection, { vaultId: "vault-1" })).toMatchObject({
+      source: { locator: { blockId: "original-paragraph", occurrence: 0 } },
+      requiresBlockIdWrite: false,
+    });
+  });
+
+  it("preserves Copy and appends DSH in Obsidian's shared event menu", () => {
+    const previewNode = {};
+    const selection = {
+      rangeCount: 1,
+      toString: () => "可引用原文。",
+      getRangeAt: () => ({ commonAncestorContainer: previewNode }),
+    };
+    const view = {
+      file: { path: "菜单.md" },
+      containerEl: { contains: (node: unknown) => node === previewNode },
+      getViewData: () => "可引用原文。\n",
+    };
+    let listener: ((event: MouseEvent) => void) | undefined;
+    let registrationOptions: boolean | AddEventListenerOptions | undefined;
+    const fakeDocument = { getSelection: () => selection };
+    const plugin = {
+      app: {
+        vault: {},
+        workspace: { getActiveViewOfType: () => view },
+      },
+      registerDomEvent: (_target: unknown, _type: string, callback: (event: MouseEvent) => void, options?: boolean | AddEventListenerOptions) => {
+        listener = callback;
+        registrationOptions = options;
+      },
+    };
+    const titles: string[] = [];
+    const clickHandlers: Array<() => unknown> = [];
+    const menu = {
+      addItem: vi.fn((configure: (value: unknown) => unknown) => {
+        const item = {
+          setTitle(title: string) { titles.push(title); return this; },
+          setIcon() { return this; },
+          onClick(handler: () => unknown) { clickHandlers.push(handler); return this; },
+        };
+        configure(item);
+        return menu;
+      }),
+      showAtMouseEvent: vi.fn(),
+    };
+    const event = { preventDefault: vi.fn() } as unknown as MouseEvent;
+    const copyText = vi.fn();
+
+    registerReadingSelectionMenu(plugin as never, {
+      markdownViewType: class FakeMarkdownView {} as never,
+      document: fakeDocument as never,
+      menuForEvent: () => menu as never,
+      copyText,
+      onCitation: vi.fn(),
+    });
+    listener?.(event);
+
+    expect(menu.addItem).toHaveBeenCalledTimes(2);
+    expect(titles).toEqual(["复制", "引用到 DSH"]);
+    expect(registrationOptions).toEqual({ capture: true });
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(menu.showAtMouseEvent).not.toHaveBeenCalled();
+    expect(clickHandlers).toHaveLength(2);
+    void clickHandlers[0]?.();
+    expect(copyText).toHaveBeenCalledWith("可引用原文。");
+  });
+
+  it("leaves the original menu untouched when a reading selection cannot be resolved", () => {
+    const previewNode = {};
+    const selection = {
+      rangeCount: 1,
+      toString: () => "重复段落",
+      getRangeAt: () => ({ commonAncestorContainer: previewNode }),
+    };
+    const view = {
+      file: { path: "歧义.md" },
+      containerEl: { contains: (node: unknown) => node === previewNode },
+      getViewData: () => "重复段落\n\n重复段落\n",
+    };
+    let listener: ((event: MouseEvent) => void) | undefined;
+    const plugin = {
+      app: { vault: {}, workspace: { getActiveViewOfType: () => view } },
+      registerDomEvent: (_target: unknown, _type: string, callback: (event: MouseEvent) => void) => {
+        listener = callback;
+      },
+    };
+    const menuForEvent = vi.fn();
+    const event = { preventDefault: vi.fn() } as unknown as MouseEvent;
+
+    registerReadingSelectionMenu(plugin as never, {
+      markdownViewType: class FakeMarkdownView {} as never,
+      document: { getSelection: () => selection } as never,
+      menuForEvent,
+      onCitation: vi.fn(),
+    });
+    listener?.(event);
+
+    expect(menuForEvent).not.toHaveBeenCalled();
+    expect(event.preventDefault).not.toHaveBeenCalled();
   });
 });

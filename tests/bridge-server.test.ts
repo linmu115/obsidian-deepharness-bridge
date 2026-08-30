@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { startBridgeServer, type RunningBridge } from "../src/bridge/server.ts";
-import type { BacklinkCommitV2, DeepLinkAction } from "../src/protocol.ts";
+import type { BacklinkCommitV2, DeepLinkAction, ReferenceDeleteCommitV2, ReferenceDeleteRequestV2 } from "../src/protocol.ts";
 import { createObsidianReferenceCapture } from "../src/vault/reference-source.ts";
 
 const DSH_ORIGIN = "http://127.0.0.1:51882";
+const SURFACE_A = "7b31f255-d087-4f8e-bdd6-d09a61860819";
+const SURFACE_B = "a2e5d29d-d44f-4e8e-bf5d-fe209f016196";
 const openBridges: RunningBridge[] = [];
 
 afterEach(async () => {
@@ -39,16 +41,19 @@ async function handshake(bridge: RunningBridge, origin = DSH_ORIGIN): Promise<st
   return (await response.json() as { token: string }).token;
 }
 
-async function handshakeV2(bridge: RunningBridge, clientId = "dsh-web-v2"): Promise<string> {
+async function handshakeV2(bridge: RunningBridge, clientId = "dsh-web-v2", surfaceId?: string): Promise<string> {
   const response = await request(bridge, "/v2/handshake", {
     method: "POST",
     headers: { "content-type": "application/json", origin: DSH_ORIGIN },
-    body: JSON.stringify({ clientId }),
+    body: JSON.stringify({ clientId, ...(surfaceId === undefined ? {} : { surfaceId }) }),
   });
   expect(response.status).toBe(200);
   const body = await response.json() as { token: string; annotationProtocolVersion: number; capabilities: string[] };
   expect(body).toMatchObject({ annotationProtocolVersion: 2 });
-  expect(body.capabilities).toEqual(expect.arrayContaining(["reference-capture-v2", "reference-refresh", "backlink-commit-v2"]));
+  expect(body.capabilities).toEqual(expect.arrayContaining([
+    "reference-capture-v2", "reference-refresh", "backlink-commit-v2", "reference-delete-v2",
+    "targeted-deep-link-v1", "sticker-backlink-delete-v1",
+  ]));
   return body.token;
 }
 
@@ -137,7 +142,7 @@ describe("loopback bridge server", () => {
     expect(expired.status).toBe(401);
   });
 
-  it("keeps FIFO actions until the client acknowledges them", async () => {
+  it("keeps only the latest queued navigation intent", async () => {
     const bridge = await start();
     const token = await handshake(bridge);
     const secondAction: DeepLinkAction = {
@@ -154,10 +159,7 @@ describe("loopback bridge server", () => {
     expect(pending.status).toBe(200);
     expect(await pending.json()).toEqual({
       cursor: 2,
-      actions: [
-        { cursor: 1, message: firstAction },
-        { cursor: 2, message: secondAction },
-      ],
+      actions: [{ cursor: 2, message: secondAction }],
     });
 
     const ack = await request(bridge, `/v1/actions/${firstAction.actionId}/ack`, {
@@ -166,12 +168,104 @@ describe("loopback bridge server", () => {
       body: "{}",
     });
     expect(ack.status).toBe(200);
+    expect(await ack.json()).toEqual({ acknowledged: false, actionId: firstAction.actionId });
     const remaining = await request(bridge, "/v1/actions/next?after=0", {
       headers: authorized(token),
     });
     expect(await remaining.json()).toEqual({
       cursor: 2,
       actions: [{ cursor: 2, message: secondAction }],
+    });
+  });
+
+  it("treats a repeated one-shot acknowledgement as idempotent", async () => {
+    const bridge = await start();
+    bridge.enqueue(firstAction);
+    const token = await handshakeV2(bridge, "dsh-web-idempotent-ack");
+    const options = {
+      method: "POST",
+      headers: authorized(token, { "content-type": "application/json" }),
+      body: "{}",
+    } as const;
+    const first = await request(bridge, `/v1/actions/${firstAction.actionId}/ack`, options);
+    const repeated = await request(bridge, `/v1/actions/${firstAction.actionId}/ack`, options);
+    expect(await first.json()).toEqual({ acknowledged: true, actionId: firstAction.actionId });
+    expect(await repeated.json()).toEqual({ acknowledged: false, actionId: firstAction.actionId });
+  });
+
+  it("consumes an acknowledged deep link globally instead of replaying it to a new client", async () => {
+    const bridge = await start();
+    bridge.enqueue(firstAction);
+    const firstToken = await handshakeV2(bridge, "dsh-web-first");
+    const ack = await request(bridge, `/v1/actions/${firstAction.actionId}/ack`, {
+      method: "POST",
+      headers: authorized(firstToken, { "content-type": "application/json" }),
+      body: "{}",
+    });
+    expect(ack.status).toBe(200);
+
+    const secondToken = await handshakeV2(bridge, "dsh-web-second");
+    const pending = await request(bridge, "/v2/actions/pending?after=0", {
+      headers: authorized(secondToken),
+    });
+    expect(await pending.json()).toMatchObject({ cursor: 1, actions: [] });
+  });
+
+  it("delivers a targeted deep link only to its Obsidian Web Viewer surface", async () => {
+    const bridge = await start();
+    const targeted = { ...firstAction, targetSurfaceId: SURFACE_A };
+    bridge.enqueue(targeted);
+    const edgeToken = await handshakeV2(bridge, "dsh-edge");
+    const otherViewerToken = await handshakeV2(bridge, "dsh-other-viewer", SURFACE_B);
+    const obsidianViewerToken = await handshakeV2(bridge, "dsh-obsidian-viewer", SURFACE_A);
+
+    for (const token of [edgeToken, otherViewerToken]) {
+      const pending = await request(bridge, "/v2/actions/pending?after=0", { headers: authorized(token) });
+      expect(await pending.json()).toMatchObject({ cursor: 1, actions: [] });
+    }
+    const targetedPending = await request(bridge, "/v2/actions/pending?after=0", {
+      headers: authorized(obsidianViewerToken),
+    });
+    expect(await targetedPending.json()).toMatchObject({
+      cursor: 1,
+      actions: [{ cursor: 1, message: targeted }],
+    });
+
+    const wrongAck = await request(bridge, `/v1/actions/${targeted.actionId}/ack`, {
+      method: "POST",
+      headers: authorized(edgeToken, { "content-type": "application/json" }),
+      body: "{}",
+    });
+    expect(wrongAck.status).toBe(409);
+    const correctAck = await request(bridge, `/v1/actions/${targeted.actionId}/ack`, {
+      method: "POST",
+      headers: authorized(obsidianViewerToken, { "content-type": "application/json" }),
+      body: "{}",
+    });
+    expect(correctAck.status).toBe(200);
+  });
+
+  it("cancels queued navigation when its Obsidian reference is deleted", async () => {
+    const bridge = await start();
+    bridge.enqueue({ ...firstAction, referenceId: "reference-deleted" });
+    bridge.enqueue({
+      annotationProtocolVersion: 2,
+      type: "reference-delete-request",
+      actionId: "delete-reference-navigation",
+      referenceId: "reference-deleted",
+      profileId: "web",
+      sessionId: "session-demo",
+      setId: "set-deleted",
+      requestedAt: 100,
+    });
+
+    const token = await handshakeV2(bridge, "dsh-web-after-delete");
+    const pending = await request(bridge, "/v2/actions/pending?after=0", {
+      headers: authorized(token),
+    });
+    expect(await pending.json()).toMatchObject({
+      cursor: 2,
+      actions: [{ cursor: 2, message: { type: "reference-delete-request" } }],
     });
   });
 
@@ -231,6 +325,26 @@ describe("loopback bridge server", () => {
       anchorId: "user-node-42",
       quoteHash: "sha256:30101ebf",
     });
+  });
+
+  it("deletes every managed Obsidian backlink for a sticker identity", async () => {
+    const onDeleteStickerBacklinks = vi.fn(async () => ({ notesChanged: 2, linksRemoved: 3 }));
+    const bridge = await start({ onDeleteStickerBacklinks });
+    const token = await handshakeV2(bridge);
+    const target = {
+      stickerId: "9bb3a80e-230d-44d1-a37c-f7b79d2bf315",
+      sessionId: "session-demo",
+      anchorId: "user-node-42",
+      quoteHash: "sha256:30101ebf",
+    };
+    const response = await request(bridge, "/v1/sticker-backlinks/delete", {
+      method: "POST",
+      headers: authorized(token, { "content-type": "application/json" }),
+      body: JSON.stringify(target),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ notesChanged: 2, linksRemoved: 3 });
+    expect(onDeleteStickerBacklinks).toHaveBeenCalledWith(target);
   });
 
   it("returns bounded parsing errors and releases the listening port", async () => {
@@ -320,6 +434,35 @@ describe("loopback bridge server", () => {
     expect(conflict.status).toBe(409);
   });
 
+  it("queues and acknowledges a durable reference deletion request", async () => {
+    const bridge = await start();
+    const deletion: ReferenceDeleteRequestV2 = {
+      annotationProtocolVersion: 2,
+      type: "reference-delete-request",
+      actionId: "delete-action-1",
+      referenceId: "reference-v2",
+      profileId: "web",
+      sessionId: "session-1",
+      setId: "set-1",
+      requestedAt: 100,
+    };
+    bridge.enqueue(deletion);
+    const token = await handshakeV2(bridge);
+    const pending = await request(bridge, "/v2/actions/pending?after=0", { headers: authorized(token) });
+    const pendingBody = await pending.json() as { queueId?: unknown; actions?: unknown };
+    expect(pendingBody.queueId).toEqual(expect.any(String));
+    expect(pendingBody).toMatchObject({ actions: [{ cursor: 1, message: deletion }] });
+
+    const ack = await request(bridge, `/v1/actions/${deletion.actionId}/ack`, {
+      method: "POST",
+      headers: authorized(token, { "content-type": "application/json" }),
+      body: "{}",
+    });
+    expect(ack.status).toBe(200);
+    const afterAck = await request(bridge, "/v2/actions/pending?after=0", { headers: authorized(token) });
+    expect(await afterAck.json()).toMatchObject({ actions: [] });
+  });
+
   it("serves refresh, discard, backlink commit and open-note v2 routes", async () => {
     const onRefreshReference = vi.fn(async () => ({ kind: "offline" as const }));
     const onDiscardReference = vi.fn(async () => undefined);
@@ -327,8 +470,11 @@ describe("loopback bridge server", () => {
       referenceId: "reference-v2", commitDigest: "sha256:30101ebf30101ebf30101ebf30101ebf30101ebf30101ebf30101ebf30101ebf",
       notePath: "note.md", blockId: "dsh-ref-reference", revision: "sha256:new", writtenAt: 100,
     }));
+    const onDeleteCommittedReference = vi.fn(async () => undefined);
     const onOpenNote = vi.fn(async () => undefined);
-    const bridge = await start({ onRefreshReference, onDiscardReference, onCommitBacklink, onOpenNote });
+    const bridge = await start({
+      onRefreshReference, onDiscardReference, onCommitBacklink, onDeleteCommittedReference, onOpenNote,
+    });
     const token = await handshakeV2(bridge);
     const jsonHeaders = authorized(token, { "content-type": "application/json" });
 
@@ -350,6 +496,13 @@ describe("loopback bridge server", () => {
       userTextHash: "sha256:30101ebf30101ebf30101ebf30101ebf30101ebf30101ebf30101ebf30101ebf",
     };
     expect((await request(bridge, "/v2/backlinks/commit", { method: "POST", headers: jsonHeaders, body: JSON.stringify(commit) })).status).toBe(200);
+    const deletion: ReferenceDeleteCommitV2 = {
+      annotationProtocolVersion: 2, type: "reference-delete-commit", referenceId: "reference-v2",
+      profileId: "web", sessionId: "session-1", setId: "set-1", deletedAt: 200,
+    };
+    expect((await request(bridge, "/v2/references/reference-v2/delete-commit", {
+      method: "POST", headers: jsonHeaders, body: JSON.stringify(deletion),
+    })).status).toBe(200);
     expect((await request(bridge, "/v2/obsidian/open-note", {
       method: "POST", headers: jsonHeaders,
       body: JSON.stringify({ protocolVersion: 1, type: "open-note", actionId: "00000000-0000-4000-8000-000000000001", notePath: "note.md", blockId: "block-1" }),
@@ -357,6 +510,7 @@ describe("loopback bridge server", () => {
     expect(onRefreshReference).toHaveBeenCalledOnce();
     expect(onDiscardReference).toHaveBeenCalledOnce();
     expect(onCommitBacklink).toHaveBeenCalledOnce();
+    expect(onDeleteCommittedReference).toHaveBeenCalledWith(deletion);
     expect(onOpenNote).toHaveBeenCalledOnce();
   });
 

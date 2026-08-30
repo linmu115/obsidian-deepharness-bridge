@@ -117,12 +117,16 @@ export function renderSessionNote(parsed: ParsedSessionNote): string {
   return parsed.source;
 }
 
+function stickerCalloutTitle(quote: string): string {
+  return quote.replace(/[ \t]*\r?\n[ \t]*/g, " ").replace(/ {2,}/g, " ").trim();
+}
+
 export function renderStickerBlock(sticker: StickerRecord): string {
   const { markdown, ...metadata } = sticker;
   const blockId = sticker.blockId ?? `dsh-sticker-${sticker.stickerId.slice(0, 8)}`;
   return [
     `<!-- dsh-sticker:${JSON.stringify({ ...metadata, blockId })} -->`,
-    `> [!note]+ ${sticker.quote}`,
+    `> [!note]+ ${stickerCalloutTitle(sticker.quote)}`,
     ...markdown.split("\n").map((line) => `> ${line}`),
     `^${blockId}`,
     "<!-- /dsh-sticker -->",

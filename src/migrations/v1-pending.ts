@@ -2,11 +2,13 @@ import {
   BacklinkReceiptV2Schema,
   ObsidianReferenceCaptureV2Schema,
   ReferenceClaimV2Schema,
+  ReferenceDeleteRequestV2Schema,
   pendingCitationSchema,
   type BacklinkReceiptV2,
   type ObsidianReferenceCaptureV2,
   type PendingCitation,
   type ReferenceClaimV2,
+  type ReferenceDeleteRequestV2,
 } from "../protocol.ts";
 import type { DeepHarnessBridgeSettings } from "../settings.ts";
 import { createObsidianReferenceCapture, occurrenceAtBlock } from "../vault/reference-source.ts";
@@ -43,6 +45,7 @@ export interface StoredPluginDataV2 {
   settings: DeepHarnessBridgeSettings;
   pendingReferences: PendingReferenceRecord[];
   backlinkReceipts: BacklinkReceiptV2[];
+  referenceDeleteRequests: ReferenceDeleteRequestV2[];
 }
 
 interface StoredPluginDataV1 {
@@ -117,6 +120,7 @@ function validateV2(value: StoredPluginDataV2): StoredPluginDataV2 {
     settings: value.settings,
     pendingReferences,
     backlinkReceipts: value.backlinkReceipts.map((receipt) => BacklinkReceiptV2Schema.parse(receipt)),
+    referenceDeleteRequests: (value.referenceDeleteRequests ?? []).map((request) => ReferenceDeleteRequestV2Schema.parse(request)),
   };
 }
 
@@ -174,7 +178,7 @@ export async function migrateStoredPluginData(raw: unknown, options: MigrationOp
       blockIdOwnership: markerOwnership(undefined, capture),
     });
   }
-  return { dataVersion: 2, vaultId, settings, pendingReferences, backlinkReceipts: [] };
+  return { dataVersion: 2, vaultId, settings, pendingReferences, backlinkReceipts: [], referenceDeleteRequests: [] };
 }
 
 export function releaseMigratedReference(
@@ -203,10 +207,13 @@ export function discardPendingReference(
   const pendingReferences = data.pendingReferences.filter((record) => (
     record.state === "needs-reselect" ? record.referenceId !== referenceId : record.capture.referenceId !== referenceId
   ));
-  return pendingReferences.length === data.pendingReferences.length
+  const referenceDeleteRequests = data.referenceDeleteRequests.filter((request) => request.referenceId !== referenceId);
+  const changed = pendingReferences.length !== data.pendingReferences.length
+    || referenceDeleteRequests.length !== data.referenceDeleteRequests.length;
+  return !changed
     ? { data, changed: false }
     : {
-        data: { ...data, pendingReferences },
+        data: { ...data, pendingReferences, referenceDeleteRequests },
         changed: true,
         ...(record === undefined ? {} : { record }),
       };
