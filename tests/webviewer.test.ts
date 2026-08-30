@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { JSDOM } from "jsdom";
 
-import { dshViewerUrlForSurface, ensureDshWebViewer } from "../src/webviewer/adapter.ts";
+import {
+  dshViewerUrlForSurface,
+  ensureDshWebViewer,
+  provisionExistingDshWebViewer,
+} from "../src/webviewer/adapter.ts";
 import { handleDshUrl, registerDshLinkInterceptor } from "../src/webviewer/deep-link.ts";
 import { buildObsidianDshLink, obsidianProtocolUrl } from "../src/logical-link.ts";
 
@@ -176,6 +180,28 @@ describe("Obsidian DSH Web Viewer adapter", () => {
     // provisioned instead of reloading it on every logical-link click.
     await ensureDshWebViewer(app, targeted);
     expect(existing.setViewState).toHaveBeenCalledTimes(1);
+  });
+
+  it("provisions an existing viewer in the background without revealing or creating a tab", async () => {
+    const existing = fakeLeaf("http://127.0.0.1:51882/");
+    const { app } = appWith([existing]);
+    const targeted = dshViewerUrlForSurface("http://127.0.0.1:51882/?token=current-token", SURFACE_ID);
+
+    await expect(provisionExistingDshWebViewer(app, targeted)).resolves.toBe(true);
+    expect(existing.setViewState).toHaveBeenCalledWith(expect.objectContaining({
+      state: expect.objectContaining({ url: targeted }),
+    }));
+    expect(app.workspace.revealLeaf).not.toHaveBeenCalled();
+    expect(app.workspace.getLeaf).not.toHaveBeenCalled();
+  });
+
+  it("does not create a Web Viewer merely to pre-provision its routing identity", async () => {
+    const { app } = appWith([]);
+    const targeted = dshViewerUrlForSurface("http://127.0.0.1:51882/?token=current-token", SURFACE_ID);
+
+    await expect(provisionExistingDshWebViewer(app, targeted)).resolves.toBe(false);
+    expect(app.workspace.getLeaf).not.toHaveBeenCalled();
+    expect(app.workspace.revealLeaf).not.toHaveBeenCalled();
   });
 
   it("creates a core webviewer tab when no matching DSH leaf exists", async () => {

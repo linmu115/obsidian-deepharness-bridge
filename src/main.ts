@@ -53,7 +53,11 @@ import { refreshObsidianReference } from "./vault/reference-source.ts";
 import { readSessionNote, saveSessionNote } from "./vault/session-notes.ts";
 import { listStickerBacklinks } from "./vault/sticker-backlinks.ts";
 import { deleteStickerBacklinks } from "./vault/sticker-backlink-lifecycle.ts";
-import { dshViewerUrlForSurface, ensureDshWebViewer } from "./webviewer/adapter.ts";
+import {
+  dshViewerUrlForSurface,
+  ensureDshWebViewer,
+  provisionExistingDshWebViewer,
+} from "./webviewer/adapter.ts";
 import { handleDshUrl, registerDshLinkInterceptor } from "./webviewer/deep-link.ts";
 import { resolveDshViewerUrl } from "./webviewer/launch-url.ts";
 import { ObsidianMainMarkdownWorkspace } from "./workspace/obsidian-adapter.ts";
@@ -159,6 +163,21 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
     this.addSettingTab(new DeepHarnessSettingTab(this.app, this));
     this.register(() => { void this.bridge?.close(); });
     await this.startBridge();
+    this.app.workspace.onLayoutReady(() => {
+      void this.provisionExistingViewerSurface().catch((error: unknown) => {
+        console.warn("[obsidian-deepharness-bridge] Web Viewer surface provisioning failed", error);
+      });
+    });
+  }
+
+  private async provisionExistingViewerSurface(): Promise<void> {
+    await provisionExistingDshWebViewer(
+      this.app,
+      dshViewerUrlForSurface(
+        await resolveDshViewerUrl(this.settings),
+        this.settings.webViewerSurfaceId,
+      ),
+    );
   }
 
   async updateSettings(patch: Partial<DeepHarnessBridgeSettings>): Promise<void> {

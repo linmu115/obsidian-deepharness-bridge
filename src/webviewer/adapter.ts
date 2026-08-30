@@ -71,42 +71,57 @@ function isReadyDshLeaf(leaf: WebViewerLeaf): boolean {
     && state.title !== "data:text/plain,";
 }
 
-export async function ensureDshWebViewer(app: WebViewerApp, dshUrl: string): Promise<WebViewerLeaf> {
-  const target = loopbackUrl(dshUrl);
+function existingDshLeaf(app: WebViewerApp, target: URL): WebViewerLeaf | undefined {
   const candidates = app.workspace.getLeavesOfType("webviewer").filter((leaf) => {
     const state = leafState(leaf);
     if (!state.url) return false;
     try { return loopbackUrl(state.url).origin === target.origin; }
     catch { return false; }
   });
-  const existing = candidates.find(isReadyDshLeaf)
+  return candidates.find(isReadyDshLeaf)
     ?? candidates.find((leaf) => leafState(leaf).mode === "webview")
     ?? candidates[0];
+}
+
+async function provisionDshLeaf(existing: WebViewerLeaf, target: URL): Promise<void> {
+  const state = leafState(existing);
+  const currentUrl = state.url ? new URL(state.url) : undefined;
+  const currentHref = currentUrl?.href;
+  const needsWebviewMode = state.mode !== "webview";
+  const targetSurfaceId = surfaceIdFromUrl(target);
+  const needsSurfaceRouting = targetSurfaceId !== undefined
+    && surfaceIdFromUrl(currentUrl) !== targetSurfaceId
+    && provisionedSurfaces.get(existing) !== targetSurfaceId;
+  if (needsWebviewMode && currentHref === target.href) {
+    await existing.setViewState({
+      type: "webviewer",
+      active: true,
+      state: { url: "about:blank", title: "DeepSeek Harness", mode: "webview" },
+    });
+  }
+  if (needsWebviewMode || needsSurfaceRouting) {
+    await existing.setViewState({
+      type: "webviewer",
+      active: true,
+      state: { url: target.href, title: "DeepSeek Harness", mode: "webview" },
+    });
+    if (targetSurfaceId !== undefined) provisionedSurfaces.set(existing, targetSurfaceId);
+  }
+}
+
+export async function provisionExistingDshWebViewer(app: WebViewerApp, dshUrl: string): Promise<boolean> {
+  const target = loopbackUrl(dshUrl);
+  const existing = existingDshLeaf(app, target);
+  if (existing === undefined) return false;
+  await provisionDshLeaf(existing, target);
+  return true;
+}
+
+export async function ensureDshWebViewer(app: WebViewerApp, dshUrl: string): Promise<WebViewerLeaf> {
+  const target = loopbackUrl(dshUrl);
+  const existing = existingDshLeaf(app, target);
   if (existing) {
-    const state = leafState(existing);
-    const currentUrl = state.url ? new URL(state.url) : undefined;
-    const currentHref = currentUrl?.href;
-    const needsWebviewMode = state.mode !== "webview";
-    const targetSurfaceId = surfaceIdFromUrl(target);
-    const needsSurfaceRouting = targetSurfaceId !== null
-      && targetSurfaceId !== undefined
-      && surfaceIdFromUrl(currentUrl) !== targetSurfaceId
-      && provisionedSurfaces.get(existing) !== targetSurfaceId;
-    if (needsWebviewMode && currentHref === target.href) {
-      await existing.setViewState({
-        type: "webviewer",
-        active: true,
-        state: { url: "about:blank", title: "DeepSeek Harness", mode: "webview" },
-      });
-    }
-    if (needsWebviewMode || needsSurfaceRouting) {
-      await existing.setViewState({
-        type: "webviewer",
-        active: true,
-        state: { url: target.href, title: "DeepSeek Harness", mode: "webview" },
-      });
-      if (targetSurfaceId !== undefined) provisionedSurfaces.set(existing, targetSurfaceId);
-    }
+    await provisionDshLeaf(existing, target);
     app.workspace.revealLeaf(existing);
     return existing;
   }
