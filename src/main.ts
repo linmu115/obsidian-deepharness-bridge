@@ -37,6 +37,7 @@ import { DeepHarnessSettingTab, type BridgeSettingsOwner } from "./ui/settings-t
 import {
   compactRenderedDshBlockIds,
   createDshBlockIdCompactExtension,
+  hideRenderedDshReferenceBlocks,
 } from "./ui/block-id-display.ts";
 import { ObsidianVaultAdapter } from "./vault/obsidian-adapter.ts";
 import {
@@ -117,6 +118,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
     this.registerEditorExtension(createDshBlockIdCompactExtension(editorLivePreviewField, chipActions));
     this.registerMarkdownPostProcessor((element) => {
       compactRenderedDshBlockIds(element, chipActions);
+      hideRenderedDshReferenceBlocks(element);
     });
 
     const captureOptions = () => ({ vaultId: this.data.vaultId });

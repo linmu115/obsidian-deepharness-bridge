@@ -1,21 +1,28 @@
-import type { Extension, StateField } from "@codemirror/state";
+import { StateField, type Extension } from "@codemirror/state";
 import {
   Decoration,
+  EditorView,
   MatchDecorator,
   ViewPlugin,
   WidgetType,
   type DecorationSet,
-  type EditorView,
   type ViewUpdate,
 } from "@codemirror/view";
 
 const DSH_BLOCK_ID_SOURCE = String.raw`(?<!\S)\^dsh-note-[A-Za-z0-9_-]+(?=[ \t]*$)`;
+const DSH_REFERENCE_BLOCK_SOURCE = String.raw`<!-- dsh-reference:\{[^\r\n]*\} -->\r?\n[\s\S]*?\r?\n<!-- \/dsh-reference -->`;
 const SKIPPED_READING_ELEMENTS = "a, code, pre, script, style, textarea, .dsh-block-id-chip";
+const RENDERED_REFERENCE_SELECTOR = '.callout[data-callout="dsh-reference"]';
 
 export interface CompactDshBlockIdMatch {
   from: number;
   to: number;
   marker: string;
+}
+
+export interface ManagedDshReferenceBlockMatch {
+  from: number;
+  to: number;
 }
 
 export interface DshBlockIdChipActions {
@@ -27,11 +34,22 @@ function blockIdPattern(): RegExp {
   return new RegExp(DSH_BLOCK_ID_SOURCE, "gm");
 }
 
+function referenceBlockPattern(): RegExp {
+  return new RegExp(DSH_REFERENCE_BLOCK_SOURCE, "g");
+}
+
 export function collectCompactDshBlockIds(markdown: string): CompactDshBlockIdMatch[] {
   return [...markdown.matchAll(blockIdPattern())].map((match) => ({
     from: match.index,
     to: match.index + match[0].length,
     marker: match[0],
+  }));
+}
+
+export function collectManagedDshReferenceBlocks(markdown: string): ManagedDshReferenceBlockMatch[] {
+  return [...markdown.matchAll(referenceBlockPattern())].map((match) => ({
+    from: match.index,
+    to: match.index + match[0].length,
   }));
 }
 
@@ -105,6 +123,29 @@ export function createDshBlockIdCompactExtension(
   livePreviewField: StateField<boolean>,
   actions: DshBlockIdChipActions = {},
 ): Extension {
+  const hiddenReferenceBlocks = (markdown: string): DecorationSet => Decoration.set(
+    collectManagedDshReferenceBlocks(markdown).map(({ from, to }) => Decoration.replace({
+      inclusive: true,
+    }).range(from, to)),
+    true,
+  );
+  const managedReferenceField = StateField.define<DecorationSet>({
+    create(state) {
+      return state.field(livePreviewField, false)
+        ? hiddenReferenceBlocks(state.doc.toString())
+        : Decoration.none;
+    },
+    update(value, transaction) {
+      const wasEnabled = transaction.startState.field(livePreviewField, false) ?? false;
+      const enabled = transaction.state.field(livePreviewField, false) ?? false;
+      if (!transaction.docChanged && wasEnabled === enabled) return value;
+      return enabled ? hiddenReferenceBlocks(transaction.state.doc.toString()) : Decoration.none;
+    },
+    provide: (field) => [
+      EditorView.decorations.from(field),
+      EditorView.atomicRanges.of((view) => view.state.field(field)),
+    ],
+  });
   const decorator = new MatchDecorator({
     regexp: new RegExp(DSH_BLOCK_ID_SOURCE, "g"),
     decoration: (match) => Decoration.replace({
@@ -116,7 +157,7 @@ export function createDshBlockIdCompactExtension(
     view.state.field(livePreviewField, false) ?? false,
   );
 
-  return ViewPlugin.fromClass(class {
+  const compactBlockIds = ViewPlugin.fromClass(class {
     decorations: DecorationSet;
     private enabled: boolean;
 
@@ -140,6 +181,7 @@ export function createDshBlockIdCompactExtension(
   }, {
     decorations: (value) => value.decorations,
   });
+  return [managedReferenceField, compactBlockIds];
 }
 
 function readingTextNodes(root: HTMLElement): Text[] {
@@ -176,4 +218,12 @@ export function compactRenderedDshBlockIds(
     node.replaceWith(fragment);
   }
   return replacementCount;
+}
+
+export function hideRenderedDshReferenceBlocks(root: HTMLElement): number {
+  const blocks: HTMLElement[] = [];
+  if (root.matches(RENDERED_REFERENCE_SELECTOR)) blocks.push(root);
+  blocks.push(...root.querySelectorAll<HTMLElement>(RENDERED_REFERENCE_SELECTOR));
+  for (const block of blocks) block.remove();
+  return blocks.length;
 }
