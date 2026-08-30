@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import type { PendingReferenceRecord, StoredPluginDataV2 } from "../src/migrations/v1-pending.ts";
+import {
+  discardPendingReference,
+  type PendingReferenceRecord,
+  type StoredPluginDataV2,
+} from "../src/migrations/v1-pending.ts";
 import type { BacklinkReceiptV2, ReferenceDeleteRequestV2 } from "../src/protocol.ts";
 import {
   acknowledgeReferenceDelete,
@@ -67,6 +71,14 @@ describe("local-first reference deletion state", () => {
   it("clears the tombstone only after the Core acknowledgement", () => {
     const removed = removeLocalReferenceState(data(), request.referenceId).data;
     expect(acknowledgeReferenceDelete(removed, request.referenceId).referenceDeleteRequests).toEqual([]);
+  });
+
+  it("accepts a Core pending-discard acknowledgement after eager local removal", () => {
+    const locallyRemoved = removeLocalReferenceState(data(), request.referenceId).data;
+    const acknowledged = discardPendingReference(locallyRemoved, request.referenceId);
+
+    expect(acknowledged.changed).toBe(true);
+    expect(acknowledged.data.referenceDeleteRequests).toEqual([]);
   });
 
   it("uses the exact relation identity for eager local cleanup", () => {

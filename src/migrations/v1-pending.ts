@@ -207,10 +207,13 @@ export function discardPendingReference(
   const pendingReferences = data.pendingReferences.filter((record) => (
     record.state === "needs-reselect" ? record.referenceId !== referenceId : record.capture.referenceId !== referenceId
   ));
-  return pendingReferences.length === data.pendingReferences.length
+  const referenceDeleteRequests = data.referenceDeleteRequests.filter((request) => request.referenceId !== referenceId);
+  const changed = pendingReferences.length !== data.pendingReferences.length
+    || referenceDeleteRequests.length !== data.referenceDeleteRequests.length;
+  return !changed
     ? { data, changed: false }
     : {
-        data: { ...data, pendingReferences },
+        data: { ...data, pendingReferences, referenceDeleteRequests },
         changed: true,
         ...(record === undefined ? {} : { record }),
       };
