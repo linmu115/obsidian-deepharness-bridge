@@ -45,6 +45,11 @@ import { handleDshUrl, registerDshLinkInterceptor } from "./webviewer/deep-link.
 import { resolveDshViewerUrl } from "./webviewer/launch-url.ts";
 import { ObsidianMainMarkdownWorkspace } from "./workspace/obsidian-adapter.ts";
 import { openNoteInMainMarkdownLeaf } from "./workspace/open-note.ts";
+import {
+  acknowledgeReferenceDelete,
+  localDeleteCommit,
+  removeLocalReferenceState,
+} from "./reference-delete-state.ts";
 
 function codedError(code: string, message: string): Error & { code: string } {
   return Object.assign(new Error(message), { code });
@@ -157,8 +162,8 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
       await cleanupOwnedPendingMarker(
         this.vaultAdapter(),
         discarded.record,
-        this.data.pendingReferences,
-        this.data.backlinkReceipts,
+        discarded.data.pendingReferences,
+        discarded.data.backlinkReceipts,
       );
     }
     this.data = {
@@ -323,27 +328,53 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
         requestedAt: Date.now(),
       });
     }
+    // Persist the delete outbox before touching the note. A crash at any later
+    // point therefore replays the Core cleanup instead of resurrecting the
+    // cross-app relationship.
     this.data = { ...this.data, referenceDeleteRequests: requests };
     await this.persist();
-    for (const request of requests) {
-      if (claimed.some((record) => record.capture.referenceId === request.referenceId)) this.bridge?.enqueue(request);
+
+    let localFailures = 0;
+    const vault = this.vaultAdapter();
+    for (const record of claimed) {
+      const request = requests.find((candidate) => candidate.referenceId === record.capture.referenceId);
+      if (request === undefined) continue;
+      const local = removeLocalReferenceState(this.data, request.referenceId);
+      try {
+        await deleteCommittedReferenceBacklink(vault, localDeleteCommit(request), local.receipt?.notePath);
+        await cleanupOwnedPendingMarker(vault, record, local.data.pendingReferences, local.data.backlinkReceipts);
+        this.data = local.data;
+        await this.persist();
+      } catch (error) {
+        localFailures += 1;
+        console.warn("[obsidian-deepharness-bridge] eager local reference deletion failed; Core will retry", error);
+      }
+      // Core removes its durable relationship immediately. Its own outbox then
+      // acknowledges this request; a failed acknowledgement remains retryable
+      // without restoring the already-deleted Obsidian block.
+      this.bridge?.enqueue(request);
     }
-    new Notice("删除请求已提交，等待 DSH 同步");
+    new Notice(localFailures === 0
+      ? "DSH 引用已删除，DSH 侧关系将在后台同步"
+      : `删除任务已记录；${localFailures} 条本地清理将在后台重试`);
   }
 
   private async deleteCommittedReference(commit: ReferenceDeleteCommitV2): Promise<void> {
-    const target = this.data.pendingReferences.find((record) => captureOf(record)?.referenceId === commit.referenceId);
-    const receipt = this.data.backlinkReceipts.find((candidate) => candidate.referenceId === commit.referenceId);
-    await deleteCommittedReferenceBacklink(this.vaultAdapter(), commit, receipt?.notePath);
-    const pendingReferences = this.data.pendingReferences.filter((record) => captureOf(record)?.referenceId !== commit.referenceId);
-    const backlinkReceipts = this.data.backlinkReceipts.filter((candidate) => candidate.referenceId !== commit.referenceId);
-    const referenceDeleteRequests = this.data.referenceDeleteRequests.filter((request) => request.referenceId !== commit.referenceId);
-    if (target !== undefined && target.state !== "needs-reselect") {
-      await cleanupOwnedPendingMarker(this.vaultAdapter(), target, pendingReferences, backlinkReceipts);
+    const local = removeLocalReferenceState(this.data, commit.referenceId);
+    if (local.record !== undefined || local.receipt !== undefined) {
+      await deleteCommittedReferenceBacklink(this.vaultAdapter(), commit, local.receipt?.notePath);
     }
-    this.data = { ...this.data, pendingReferences, backlinkReceipts, referenceDeleteRequests };
+    if (local.record !== undefined && local.record.state !== "needs-reselect") {
+      await cleanupOwnedPendingMarker(
+        this.vaultAdapter(),
+        local.record,
+        local.data.pendingReferences,
+        local.data.backlinkReceipts,
+      );
+    }
+    this.data = acknowledgeReferenceDelete(local.data, commit.referenceId);
     await this.persist();
-    new Notice("DSH 双向引用已删除");
+    new Notice("DSH 侧引用关系已完成后台同步");
   }
 
   private async startBridge(): Promise<void> {
