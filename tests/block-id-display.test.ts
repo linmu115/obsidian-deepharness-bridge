@@ -54,6 +54,7 @@ describe("compact DSH block ID display", () => {
       expect(button?.getAttribute("aria-label")).toBe("删除 DSH 引用");
       button?.click();
       expect(onDelete).toHaveBeenCalledWith("^dsh-note-01234567");
+      expect(root?.querySelector(".dsh-block-id-chip")).toBeNull();
     } finally {
       Object.assign(globalThis, { NodeFilter: previous });
     }

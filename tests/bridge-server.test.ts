@@ -337,7 +337,9 @@ describe("loopback bridge server", () => {
     bridge.enqueue(deletion);
     const token = await handshakeV2(bridge);
     const pending = await request(bridge, "/v2/actions/pending?after=0", { headers: authorized(token) });
-    expect(await pending.json()).toMatchObject({ actions: [{ cursor: 1, message: deletion }] });
+    const pendingBody = await pending.json() as { queueId?: unknown; actions?: unknown };
+    expect(pendingBody.queueId).toEqual(expect.any(String));
+    expect(pendingBody).toMatchObject({ actions: [{ cursor: 1, message: deletion }] });
 
     const ack = await request(bridge, `/v1/actions/${deletion.actionId}/ack`, {
       method: "POST",

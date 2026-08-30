@@ -13,9 +13,12 @@ import { contentRevision, type VaultTextAdapter } from "../src/vault/session-not
 
 class MemoryVault implements VaultTextAdapter {
   readonly files = new Map<string, string>();
+  readonly reads: string[] = [];
   writes = 0;
+  listCalls = 0;
 
   async read(path: string): Promise<string | null> {
+    this.reads.push(path);
     return this.files.get(path) ?? null;
   }
 
@@ -34,6 +37,7 @@ class MemoryVault implements VaultTextAdapter {
   }
 
   async listMarkdownPaths(): Promise<string[]> {
+    this.listCalls += 1;
     return [...this.files.keys()].filter((path) => path.endsWith(".md"));
   }
 }
@@ -187,6 +191,59 @@ describe("DSH backlink blocks", () => {
     expect(vault.files.get(movedPath)).toContain("Generation 保存某个时刻完整、可部署的插件组合。");
     expect(vault.files.get(movedPath)).not.toContain("dsh-reference");
     await expect(deleteCommittedReferenceBacklink(vault, deletion, notePath)).resolves.toEqual({ removed: false });
+  });
+
+  it("uses a recorded backlink path without scanning unrelated Vault notes", async () => {
+    const vault = new MemoryVault();
+    vault.files.set(notePath, original);
+    const capture = createObsidianReferenceCapture({
+      actionId: "action-direct", referenceId: pending.citationId, vaultId: "vault-1", notePath,
+      blockId: "generation-definition", occurrence: 0, selectedText: pending.text, markdown: original, capturedAt: 100,
+    });
+    const commit: BacklinkCommitV2 = {
+      annotationProtocolVersion: 2, type: "backlink-commit", referenceId: capture.referenceId,
+      setId: "set-direct", profileId: "web", sessionId: "session-direct", userMessageId: "user-direct",
+      userAnchorId: "anchor-direct",
+      userTextHash: "sha256:30101ebf30101ebf30101ebf30101ebf30101ebf30101ebf30101ebf30101ebf",
+    };
+    const receipt = await commitReferenceBacklink(vault, capture, commit, undefined, 200);
+    vault.files.set("unrelated.md", "<!-- /dsh-reference -->\n");
+    vault.reads.length = 0;
+    vault.listCalls = 0;
+
+    await expect(deleteCommittedReferenceBacklink(vault, {
+      annotationProtocolVersion: 2, type: "reference-delete-commit", referenceId: capture.referenceId,
+      profileId: commit.profileId, sessionId: commit.sessionId, setId: commit.setId, deletedAt: 300,
+    }, receipt.notePath)).resolves.toMatchObject({ removed: true, notePath });
+    expect(vault.listCalls).toBe(0);
+    expect(vault.reads).toEqual([notePath]);
+  });
+
+  it("ignores an unrelated orphan closing marker while locating a moved backlink", async () => {
+    const vault = new MemoryVault();
+    vault.files.set(notePath, original);
+    const capture = createObsidianReferenceCapture({
+      actionId: "action-orphan", referenceId: pending.citationId, vaultId: "vault-1", notePath,
+      blockId: "generation-definition", occurrence: 0, selectedText: pending.text, markdown: original, capturedAt: 100,
+    });
+    const commit: BacklinkCommitV2 = {
+      annotationProtocolVersion: 2, type: "backlink-commit", referenceId: capture.referenceId,
+      setId: "set-orphan", profileId: "web", sessionId: "session-orphan", userMessageId: "user-orphan",
+      userAnchorId: "anchor-orphan",
+      userTextHash: "sha256:30101ebf30101ebf30101ebf30101ebf30101ebf30101ebf30101ebf30101ebf",
+    };
+    await commitReferenceBacklink(vault, capture, commit, undefined, 200);
+    const movedPath = "归档/移动后的引用.md";
+    const committed = vault.files.get(notePath) ?? "";
+    vault.files.delete(notePath);
+    vault.files.set("坏标记.md", "<!-- /dsh-reference -->\n");
+    vault.files.set(movedPath, committed);
+
+    await expect(deleteCommittedReferenceBacklink(vault, {
+      annotationProtocolVersion: 2, type: "reference-delete-commit", referenceId: capture.referenceId,
+      profileId: commit.profileId, sessionId: commit.sessionId, setId: commit.setId, deletedAt: 300,
+    }, notePath)).resolves.toMatchObject({ removed: true, notePath: movedPath });
+    expect(vault.files.get("坏标记.md")).toBe("<!-- /dsh-reference -->\n");
   });
 
   it("refuses to delete a generated block belonging to another DSH relation", async () => {

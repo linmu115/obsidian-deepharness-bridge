@@ -100,16 +100,32 @@ function parseV2Metadata(value: string): ReferenceMetadataV2 | null {
   return metadata as ReferenceMetadataV2;
 }
 
+function parseMatchingV2Metadata(value: string, referenceId: string): ReferenceMetadataV2 | null {
+  let raw: unknown;
+  try { raw = JSON.parse(value); }
+  catch { return null; }
+  if (typeof raw !== "object" || raw === null || (raw as { referenceId?: unknown }).referenceId !== referenceId) {
+    return null;
+  }
+  return parseV2Metadata(value);
+}
+
 function findV2Reference(source: string, referenceId: string): ReferenceMetadataV2 | null {
   REFERENCE_BLOCK.lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = REFERENCE_BLOCK.exec(source)) !== null) {
-    const metadata = parseV2Metadata(match[1] ?? "");
+    const metadata = parseMatchingV2Metadata(match[1] ?? "", referenceId);
     if (metadata?.referenceId === referenceId) return metadata;
   }
-  const starts = source.match(/<!-- dsh-reference:/g)?.length ?? 0;
-  const ends = source.match(/<!-- \/dsh-reference -->/g)?.length ?? 0;
-  if (starts !== ends) throw new ReferenceDocumentError("CORRUPT_MARKER", "A dsh-reference marker is incomplete");
+  const openingMarkers = source.matchAll(/<!-- dsh-reference:(\{[^\r\n]*\}) -->/g);
+  for (const opening of openingMarkers) {
+    let raw: unknown;
+    try { raw = JSON.parse(opening[1] ?? ""); }
+    catch { continue; }
+    if (typeof raw === "object" && raw !== null && (raw as { referenceId?: unknown }).referenceId === referenceId) {
+      throw new ReferenceDocumentError("CORRUPT_MARKER", "The requested dsh-reference marker is incomplete");
+    }
+  }
   return null;
 }
 
@@ -120,15 +136,48 @@ function findV2ReferenceBlock(
   REFERENCE_BLOCK.lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = REFERENCE_BLOCK.exec(source)) !== null) {
-    const metadata = parseV2Metadata(match[1] ?? "");
+    const metadata = parseMatchingV2Metadata(match[1] ?? "", referenceId);
     if (metadata?.referenceId === referenceId) {
       return { start: match.index, end: match.index + match[0].length, metadata };
     }
   }
-  const starts = source.match(/<!-- dsh-reference:/g)?.length ?? 0;
-  const ends = source.match(/<!-- \/dsh-reference -->/g)?.length ?? 0;
-  if (starts !== ends) throw new ReferenceDocumentError("CORRUPT_MARKER", "A dsh-reference marker is incomplete");
+  const openingMarkers = source.matchAll(/<!-- dsh-reference:(\{[^\r\n]*\}) -->/g);
+  for (const opening of openingMarkers) {
+    let raw: unknown;
+    try { raw = JSON.parse(opening[1] ?? ""); }
+    catch { continue; }
+    if (typeof raw === "object" && raw !== null && (raw as { referenceId?: unknown }).referenceId === referenceId) {
+      throw new ReferenceDocumentError("CORRUPT_MARKER", "The requested dsh-reference marker is incomplete");
+    }
+  }
   return null;
+}
+
+function validateDeleteRelation(metadata: ReferenceMetadataV2, commit: ReferenceDeleteCommitV2): void {
+  if (
+    metadata.setId !== commit.setId || metadata.profileId !== commit.profileId
+    || metadata.sessionId !== commit.sessionId
+  ) throw new ReferenceDocumentError("IDEMPOTENCY_CONFLICT", "The committed reference block belongs to a different DSH relation");
+}
+
+async function removeV2ReferenceBlock(
+  vault: ReferenceDeleteVaultAdapter,
+  path: string,
+  commit: ReferenceDeleteCommitV2,
+  metadata: ReferenceMetadataV2,
+): Promise<{ removed: boolean; notePath?: string; blockId?: string }> {
+  let removed = false;
+  await vault.process(path, (source) => {
+    const block = findV2ReferenceBlock(source, commit.referenceId);
+    if (block === null) return source;
+    validateDeleteRelation(block.metadata, commit);
+    removed = true;
+    let end = block.end;
+    if (source.slice(end, end + 2) === "\r\n") end += 2;
+    else if (source[end] === "\n") end += 1;
+    return `${source.slice(0, block.start)}${source.slice(end)}`;
+  });
+  return removed ? { removed, notePath: path, blockId: metadata.blockId } : { removed: false };
 }
 
 export async function deleteCommittedReferenceBacklink(
@@ -136,10 +185,18 @@ export async function deleteCommittedReferenceBacklink(
   commit: ReferenceDeleteCommitV2,
   recordedNotePath?: string,
 ): Promise<{ removed: boolean; notePath?: string; blockId?: string }> {
-  const orderedPaths = [
-    ...(recordedNotePath ? [recordedNotePath] : []),
-    ...(await vault.listMarkdownPaths()).filter((path) => path !== recordedNotePath),
-  ];
+  if (recordedNotePath !== undefined) {
+    const recordedSource = await vault.read(recordedNotePath);
+    if (recordedSource !== null) {
+      const recordedBlock = findV2ReferenceBlock(recordedSource, commit.referenceId);
+      if (recordedBlock !== null) {
+        validateDeleteRelation(recordedBlock.metadata, commit);
+        return removeV2ReferenceBlock(vault, recordedNotePath, commit, recordedBlock.metadata);
+      }
+    }
+  }
+
+  const orderedPaths = (await vault.listMarkdownPaths()).filter((path) => path !== recordedNotePath);
   let found: { path: string; metadata: ReferenceMetadataV2 } | undefined;
   for (const path of orderedPaths) {
     const source = await vault.read(path);
@@ -147,29 +204,11 @@ export async function deleteCommittedReferenceBacklink(
     const block = findV2ReferenceBlock(source, commit.referenceId);
     if (block === null) continue;
     if (found !== undefined) throw new ReferenceDocumentError("IDEMPOTENCY_CONFLICT", "The committed reference block is ambiguous");
-    if (
-      block.metadata.setId !== commit.setId || block.metadata.profileId !== commit.profileId
-      || block.metadata.sessionId !== commit.sessionId
-    ) throw new ReferenceDocumentError("IDEMPOTENCY_CONFLICT", "The committed reference block belongs to a different DSH relation");
+    validateDeleteRelation(block.metadata, commit);
     found = { path, metadata: block.metadata };
   }
   if (found === undefined) return { removed: false };
-
-  let removed = false;
-  await vault.process(found.path, (source) => {
-    const block = findV2ReferenceBlock(source, commit.referenceId);
-    if (block === null) return source;
-    if (
-      block.metadata.setId !== commit.setId || block.metadata.profileId !== commit.profileId
-      || block.metadata.sessionId !== commit.sessionId
-    ) throw new ReferenceDocumentError("IDEMPOTENCY_CONFLICT", "The committed reference block changed before deletion");
-    removed = true;
-    let end = block.end;
-    if (source.slice(end, end + 2) === "\r\n") end += 2;
-    else if (source[end] === "\n") end += 1;
-    return `${source.slice(0, block.start)}${source.slice(end)}`;
-  });
-  return { removed, notePath: found.path, blockId: found.metadata.blockId };
+  return removeV2ReferenceBlock(vault, found.path, commit, found.metadata);
 }
 
 function renderV2Reference(

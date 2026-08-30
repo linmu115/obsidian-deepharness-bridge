@@ -51,6 +51,7 @@ function createChip(document: Document, marker: string, onDelete?: (marker: stri
     button.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
+      chip.remove();
       onDelete(marker);
     });
     chip.append(button);

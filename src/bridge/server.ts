@@ -164,6 +164,7 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
   if (!Number.isInteger(maxBodyBytes) || maxBodyBytes < 1) throw new Error("Maximum body size must be a positive integer");
 
   const queue = new ClientActionQueue();
+  const queueId = randomBytes(16).toString("hex");
   const tokens = new Map<string, TokenRecord>();
   const referenceClaims = new Map<string, ReferenceClaimV2>();
   const inMemoryNotes = new Map<string, SessionNoteDocument>();
@@ -250,7 +251,7 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
         const afterText = requestUrl.searchParams.get("after") ?? "0";
         const after = Number(afterText);
         if (!Number.isInteger(after) || after < 0) throw new HttpError(400, "Action cursor must be a non-negative integer");
-        json(response, 200, queue.pending(authentication.clientId, after), allowedOrigin);
+        json(response, 200, { queueId, ...queue.pending(authentication.clientId, after) }, allowedOrigin);
         return;
       }
 
