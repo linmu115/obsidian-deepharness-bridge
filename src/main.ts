@@ -334,10 +334,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
     const records = this.data.pendingReferences.filter((record): record is Exclude<PendingReferenceRecord, { state: "needs-reselect" }> => (
       record.state !== "needs-reselect" && record.capture.source.locator.blockId === blockId
     ));
-    if (records.length === 0) {
-      new Notice("这个 DSH 引用已没有活动的双向关系");
-      return;
-    }
+    if (records.length === 0) return;
     const claimed = records.filter((record): record is Extract<PendingReferenceRecord, { state: "claimed" }> => record.state === "claimed");
     const requests = [...this.data.referenceDeleteRequests];
     for (const record of claimed) {
@@ -359,12 +356,10 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
     this.data = { ...this.data, referenceDeleteRequests: requests };
     await this.persist();
 
-    const failures: string[] = [];
     for (const record of records.filter((candidate) => candidate.state !== "claimed")) {
       try {
         await this.discardReference(record.capture.referenceId);
       } catch (error) {
-        failures.push(error instanceof Error ? error.message : String(error));
         console.warn("[obsidian-deepharness-bridge] pending reference cleanup failed", error);
       }
     }
@@ -374,21 +369,16 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
       try {
         await this.cleanupLocalReferenceDeletion(localDeleteCommit(request));
       } catch (error) {
-        failures.push(error instanceof Error ? error.message : String(error));
         console.warn("[obsidian-deepharness-bridge] eager local reference deletion failed; Core will retry", error);
       }
       this.bridge?.enqueue(request);
     }
-    new Notice(failures.length === 0
-      ? "DSH 引用已删除，DSH 侧关系将在后台同步"
-      : `DSH 引用已从当前视图移除；后台清理将重试：${failures[0]}`);
   }
 
   private async deleteCommittedReference(commit: ReferenceDeleteCommitV2): Promise<void> {
     await this.cleanupLocalReferenceDeletion(commit);
     this.data = acknowledgeReferenceDelete(this.data, commit.referenceId);
     await this.persist();
-    new Notice("DSH 侧引用关系已完成后台同步");
   }
 
   private async startBridge(): Promise<void> {
