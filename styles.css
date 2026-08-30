@@ -12,9 +12,18 @@
   font-weight: 500;
   line-height: 1.5;
   vertical-align: 0.08em;
-  cursor: help;
+  cursor: default;
   user-select: none;
   white-space: nowrap;
+}
+
+.dsh-block-id-chip-clickable {
+  cursor: pointer;
+}
+
+.dsh-block-id-chip-clickable:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 2px;
 }
 
 .dsh-block-id-chip::before {

@@ -86,6 +86,17 @@ interface ReferenceMetadataV2 {
   blockId: string;
 }
 
+export interface CommittedReferenceNavigationTarget {
+  notePath: string;
+  referenceId: string;
+  setId: string;
+  profileId: string;
+  sessionId: string;
+  userMessageId: string;
+  userAnchorId: string;
+  userTextHash: string;
+}
+
 function parseV2Metadata(value: string): ReferenceMetadataV2 | null {
   let raw: unknown;
   try { raw = JSON.parse(value); }
@@ -125,6 +136,45 @@ function findV2Reference(source: string, referenceId: string): ReferenceMetadata
     if (typeof raw === "object" && raw !== null && (raw as { referenceId?: unknown }).referenceId === referenceId) {
       throw new ReferenceDocumentError("CORRUPT_MARKER", "The requested dsh-reference marker is incomplete");
     }
+  }
+  return null;
+}
+
+function navigationTarget(
+  notePath: string,
+  metadata: ReferenceMetadataV2,
+): CommittedReferenceNavigationTarget {
+  return {
+    notePath,
+    referenceId: metadata.referenceId,
+    setId: metadata.setId,
+    profileId: metadata.profileId,
+    sessionId: metadata.sessionId,
+    userMessageId: metadata.userMessageId,
+    userAnchorId: metadata.userAnchorId,
+    userTextHash: metadata.userTextHash,
+  };
+}
+
+export async function findCommittedReferenceNavigationTarget(
+  vault: ReferenceDeleteVaultAdapter,
+  referenceId: string,
+  recordedNotePath?: string,
+): Promise<CommittedReferenceNavigationTarget | null> {
+  if (recordedNotePath !== undefined) {
+    const source = await vault.read(recordedNotePath);
+    if (source !== null) {
+      const metadata = findV2Reference(source, referenceId);
+      if (metadata !== null) return navigationTarget(recordedNotePath, metadata);
+    }
+  }
+
+  for (const notePath of await vault.listMarkdownPaths()) {
+    if (notePath === recordedNotePath) continue;
+    const source = await vault.read(notePath);
+    if (source === null) continue;
+    const metadata = findV2Reference(source, referenceId);
+    if (metadata !== null) return navigationTarget(notePath, metadata);
   }
   return null;
 }

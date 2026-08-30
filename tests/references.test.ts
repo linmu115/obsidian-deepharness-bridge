@@ -5,6 +5,7 @@ import type { BacklinkCommitV2, ReferenceDeleteCommitV2 } from "../src/protocol.
 import {
   commitReferenceBacklink,
   deleteCommittedReferenceBacklink,
+  findCommittedReferenceNavigationTarget,
   insertResolvedCitation,
   removeResolvedCitation,
 } from "../src/vault/references.ts";
@@ -137,6 +138,17 @@ describe("DSH backlink blocks", () => {
     expect(vault.writes).toBe(1);
     expect(vault.files.get(notePath)).toContain(`"referenceId":"${capture.referenceId}"`);
     expect(vault.files.get(notePath)).toContain(`"setId":"set-1"`);
+    await expect(findCommittedReferenceNavigationTarget(vault, capture.referenceId, notePath)).resolves.toEqual({
+      notePath,
+      referenceId: capture.referenceId,
+      setId: commit.setId,
+      profileId: commit.profileId,
+      sessionId: commit.sessionId,
+      userMessageId: commit.userMessageId,
+      userAnchorId: commit.userAnchorId,
+      userTextHash: commit.userTextHash,
+    });
+    expect(vault.listCalls).toBe(0);
   });
 
   it("rejects conflicting retries and concurrent note revisions without overwriting", async () => {

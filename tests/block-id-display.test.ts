@@ -41,19 +41,28 @@ describe("compact DSH block ID display", () => {
     expect(shouldCompactDshBlockIds(true)).toBe(true);
   });
 
-  it("renders a delete control that targets the exact generated marker", () => {
-    const dom = new JSDOM('<div id="root">被引用的段落。 ^dsh-note-01234567</div>');
+  it("opens from the chip body and deletes only from the dedicated control", () => {
+    const dom = new JSDOM('<div id="root">被引用的段落。 ^dsh-note-01234567</div>', {
+      url: "https://obsidian.local/note",
+    });
     const previous = globalThis.NodeFilter;
     Object.assign(globalThis, { NodeFilter: dom.window.NodeFilter });
     try {
       const root = dom.window.document.querySelector<HTMLElement>("#root");
+      const onOpen = vi.fn();
       const onDelete = vi.fn();
       expect(root).not.toBeNull();
-      expect(compactRenderedDshBlockIds(root as HTMLElement, onDelete)).toBe(1);
+      expect(compactRenderedDshBlockIds(root as HTMLElement, { onOpen, onDelete })).toBe(1);
+      const chip = root?.querySelector<HTMLElement>(".dsh-block-id-chip");
+      expect(chip?.getAttribute("role")).toBe("link");
+      chip?.click();
+      expect(onOpen).toHaveBeenCalledWith("^dsh-note-01234567", chip);
+      expect(onDelete).not.toHaveBeenCalled();
       const button = root?.querySelector<HTMLButtonElement>(".dsh-block-id-delete");
       expect(button?.getAttribute("aria-label")).toBe("删除 DSH 引用");
       button?.click();
       expect(onDelete).toHaveBeenCalledWith("^dsh-note-01234567");
+      expect(onOpen).toHaveBeenCalledTimes(1);
       expect(root?.querySelector(".dsh-block-id-chip")).toBeNull();
     } finally {
       Object.assign(globalThis, { NodeFilter: previous });

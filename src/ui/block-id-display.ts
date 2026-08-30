@@ -18,6 +18,11 @@ export interface CompactDshBlockIdMatch {
   marker: string;
 }
 
+export interface DshBlockIdChipActions {
+  onOpen?: (marker: string, chip: HTMLElement) => void;
+  onDelete?: (marker: string) => void;
+}
+
 function blockIdPattern(): RegExp {
   return new RegExp(DSH_BLOCK_ID_SOURCE, "gm");
 }
@@ -34,14 +39,31 @@ export function shouldCompactDshBlockIds(livePreview: boolean): boolean {
   return livePreview;
 }
 
-function createChip(document: Document, marker: string, onDelete?: (marker: string) => void): HTMLSpanElement {
+function createChip(document: Document, marker: string, actions: DshBlockIdChipActions = {}): HTMLSpanElement {
   const chip = document.createElement("span");
   chip.className = "dsh-block-id-chip";
   chip.append("DSH 引用");
-  chip.title = marker;
+  chip.title = actions.onOpen === undefined ? marker : `打开对应 DSH 会话（${marker}）`;
   chip.dataset.dshBlockId = marker;
-  chip.setAttribute("aria-label", `DSH 引用块标记 ${marker}`);
-  if (onDelete !== undefined) {
+  chip.setAttribute("aria-label", actions.onOpen === undefined
+    ? `DSH 引用块标记 ${marker}`
+    : `打开对应 DSH 会话，引用块标记 ${marker}`);
+  if (actions.onOpen !== undefined) {
+    chip.classList.add("dsh-block-id-chip-clickable");
+    chip.setAttribute("role", "link");
+    chip.tabIndex = 0;
+    const open = (event: MouseEvent | KeyboardEvent): void => {
+      if (event.target !== chip) return;
+      event.preventDefault();
+      event.stopPropagation();
+      actions.onOpen?.(marker, chip);
+    };
+    chip.addEventListener("click", open);
+    chip.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") open(event);
+    });
+  }
+  if (actions.onDelete !== undefined) {
     const button = document.createElement("button");
     button.className = "dsh-block-id-delete";
     button.type = "button";
@@ -52,7 +74,7 @@ function createChip(document: Document, marker: string, onDelete?: (marker: stri
       event.preventDefault();
       event.stopPropagation();
       chip.remove();
-      onDelete(marker);
+      actions.onDelete?.(marker);
     });
     chip.append(button);
   }
@@ -60,16 +82,18 @@ function createChip(document: Document, marker: string, onDelete?: (marker: stri
 }
 
 class DshBlockIdWidget extends WidgetType {
-  constructor(private readonly marker: string, private readonly onDelete?: (marker: string) => void) {
+  constructor(private readonly marker: string, private readonly actions: DshBlockIdChipActions) {
     super();
   }
 
   override eq(other: DshBlockIdWidget): boolean {
-    return other.marker === this.marker && other.onDelete === this.onDelete;
+    return other.marker === this.marker
+      && other.actions.onOpen === this.actions.onOpen
+      && other.actions.onDelete === this.actions.onDelete;
   }
 
   override toDOM(view: EditorView): HTMLElement {
-    return createChip(view.dom.ownerDocument, this.marker, this.onDelete);
+    return createChip(view.dom.ownerDocument, this.marker, this.actions);
   }
 
   override ignoreEvent(): boolean {
@@ -79,12 +103,12 @@ class DshBlockIdWidget extends WidgetType {
 
 export function createDshBlockIdCompactExtension(
   livePreviewField: StateField<boolean>,
-  onDelete?: (marker: string) => void,
+  actions: DshBlockIdChipActions = {},
 ): Extension {
   const decorator = new MatchDecorator({
     regexp: new RegExp(DSH_BLOCK_ID_SOURCE, "g"),
     decoration: (match) => Decoration.replace({
-      widget: new DshBlockIdWidget(match[0], onDelete),
+      widget: new DshBlockIdWidget(match[0], actions),
     }),
   });
 
@@ -129,7 +153,10 @@ function readingTextNodes(root: HTMLElement): Text[] {
   return nodes;
 }
 
-export function compactRenderedDshBlockIds(root: HTMLElement, onDelete?: (marker: string) => void): number {
+export function compactRenderedDshBlockIds(
+  root: HTMLElement,
+  actions: DshBlockIdChipActions = {},
+): number {
   let replacementCount = 0;
   for (const node of readingTextNodes(root)) {
     const parent = node.parentElement;
@@ -141,7 +168,7 @@ export function compactRenderedDshBlockIds(root: HTMLElement, onDelete?: (marker
     let cursor = 0;
     for (const match of matches) {
       fragment.append(node.data.slice(cursor, match.from));
-      fragment.append(createChip(root.ownerDocument, match.marker, onDelete));
+      fragment.append(createChip(root.ownerDocument, match.marker, actions));
       cursor = match.to;
       replacementCount += 1;
     }

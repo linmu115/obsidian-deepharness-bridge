@@ -1,7 +1,11 @@
 import { editorLivePreviewField, MarkdownView, Menu, Notice, Plugin } from "obsidian";
 
 import { startBridgeServer, type RunningBridge } from "./bridge/server.ts";
-import { OBSIDIAN_DEEPHARNESS_ACTION, obsidianProtocolUrl } from "./logical-link.ts";
+import {
+  OBSIDIAN_DEEPHARNESS_ACTION,
+  buildObsidianDshLink,
+  obsidianProtocolUrl,
+} from "./logical-link.ts";
 import {
   discardPendingReference,
   migrateStoredPluginData,
@@ -35,7 +39,12 @@ import {
   createDshBlockIdCompactExtension,
 } from "./ui/block-id-display.ts";
 import { ObsidianVaultAdapter } from "./vault/obsidian-adapter.ts";
-import { commitReferenceBacklink, deleteCommittedReferenceBacklink } from "./vault/references.ts";
+import {
+  commitReferenceBacklink,
+  deleteCommittedReferenceBacklink,
+  findCommittedReferenceNavigationTarget,
+  type CommittedReferenceNavigationTarget,
+} from "./vault/references.ts";
 import { cleanupOwnedPendingMarker } from "./vault/pending-reference-cleanup.ts";
 import { refreshObsidianReference } from "./vault/reference-source.ts";
 import { readSessionNote, saveSessionNote } from "./vault/session-notes.ts";
@@ -97,10 +106,17 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
     this.data = { ...this.data, settings: this.settings };
     await this.persist();
 
-    const deleteFromMarker = (marker: string) => { void this.deleteReferencesForMarker(marker); };
-    this.registerEditorExtension(createDshBlockIdCompactExtension(editorLivePreviewField, deleteFromMarker));
+    const chipActions = {
+      onOpen: (marker: string, chip: HTMLElement) => {
+        void this.openReferencesForMarker(marker, chip).catch((error: unknown) => {
+          new Notice(error instanceof Error ? error.message : String(error));
+        });
+      },
+      onDelete: (marker: string) => { void this.deleteReferencesForMarker(marker); },
+    };
+    this.registerEditorExtension(createDshBlockIdCompactExtension(editorLivePreviewField, chipActions));
     this.registerMarkdownPostProcessor((element) => {
-      compactRenderedDshBlockIds(element, deleteFromMarker);
+      compactRenderedDshBlockIds(element, chipActions);
     });
 
     const captureOptions = () => ({ vaultId: this.data.vaultId });
@@ -327,6 +343,74 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
       backlinkReceipts: this.data.backlinkReceipts.filter((candidate) => candidate.referenceId !== referenceId),
     };
     await this.persist();
+  }
+
+  private async openReferenceTarget(target: CommittedReferenceNavigationTarget): Promise<void> {
+    await handleDshUrl(buildObsidianDshLink({
+      sessionId: target.sessionId,
+      anchorId: target.userAnchorId,
+      quoteHash: target.userTextHash,
+      setId: target.setId,
+      referenceId: target.referenceId,
+    }), {
+      app: this.app,
+      dshUrl: () => resolveDshViewerUrl(this.settings),
+      enqueue: (action) => this.bridge?.enqueue(action),
+    });
+  }
+
+  private async openReferencesForMarker(rawMarker: string, chip: HTMLElement): Promise<void> {
+    const blockId = rawMarker.replace(/^\^/, "");
+    const records = this.data.pendingReferences.filter((record): record is Extract<PendingReferenceRecord, { state: "claimed" }> => (
+      record.state === "claimed" && record.capture.source.locator.blockId === blockId
+    ));
+    if (records.length === 0) {
+      new Notice("没有找到这个气泡对应的 DSH 引用");
+      return;
+    }
+
+    const vault = this.vaultAdapter();
+    const located: Array<{ target: CommittedReferenceNavigationTarget; writtenAt: number }> = [];
+    for (const record of records) {
+      const receipt = this.data.backlinkReceipts.find((candidate) => candidate.referenceId === record.capture.referenceId);
+      if (receipt === undefined) continue;
+      const target = await findCommittedReferenceNavigationTarget(vault, record.capture.referenceId, receipt.notePath);
+      if (target === null) continue;
+      if (target.sessionId !== record.claim.sessionId || target.setId !== record.claim.setId) {
+        throw codedError("IDEMPOTENCY_CONFLICT", "气泡的 DSH 跳转目标与已登记引用不一致");
+      }
+      located.push({ target, writtenAt: receipt.writtenAt });
+    }
+
+    if (located.length === 0) {
+      new Notice("引用尚未随提问提交，暂时没有可跳转的 DSH 会话位置");
+      return;
+    }
+    located.sort((left, right) => right.writtenAt - left.writtenAt);
+    if (located.length === 1) {
+      await this.openReferenceTarget(located[0]!.target);
+      return;
+    }
+
+    const menu = new Menu();
+    for (const { target } of located) {
+      const sessionLabel = target.sessionId.length > 20
+        ? `${target.sessionId.slice(0, 17)}…`
+        : target.sessionId;
+      const anchorLabel = target.userAnchorId.length > 12
+        ? `${target.userAnchorId.slice(0, 9)}…`
+        : target.userAnchorId;
+      menu.addItem((item) => item
+        .setTitle(`${sessionLabel} · ${anchorLabel}`)
+        .setIcon("message-square")
+        .onClick(() => {
+          void this.openReferenceTarget(target).catch((error: unknown) => {
+            new Notice(error instanceof Error ? error.message : String(error));
+          });
+        }));
+    }
+    const bounds = chip.getBoundingClientRect();
+    menu.showAtPosition({ x: bounds.left, y: bounds.bottom }, chip.ownerDocument);
   }
 
   private async deleteReferencesForMarker(rawMarker: string): Promise<void> {
