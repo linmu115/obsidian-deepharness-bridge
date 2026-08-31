@@ -20,6 +20,10 @@ export interface ManagedStickerBacklinkMatch {
   target: StickerBacklinkTarget;
 }
 
+export interface DshStickerBacklinkChipActions {
+  onDelete?: (target: StickerBacklinkTarget) => void;
+}
+
 function stickerBacklinkPattern(): RegExp {
   return new RegExp(DSH_STICKER_BACKLINK_SOURCE, "g");
 }
@@ -53,35 +57,68 @@ function parseMetadata(value: string): unknown {
   catch { return undefined; }
 }
 
-function createStickerChip(document: Document, href: string): HTMLAnchorElement {
-  const chip = document.createElement("a");
+function createStickerChip(
+  document: Document,
+  href: string,
+  target: StickerBacklinkTarget,
+  actions: DshStickerBacklinkChipActions = {},
+): HTMLSpanElement {
+  const chip = document.createElement("span");
   chip.className = "dsh-block-id-chip dsh-block-id-chip-clickable dsh-sticker-backlink-chip";
-  chip.href = href;
-  chip.append("DSH 贴纸");
-  chip.title = "打开对应 DSH 贴纸";
-  chip.setAttribute("aria-label", "打开对应 DSH 贴纸");
+  const link = document.createElement("a");
+  link.className = "dsh-sticker-backlink-open";
+  link.href = href;
+  link.append("DSH 贴纸");
+  link.title = "打开对应 DSH 贴纸";
+  link.setAttribute("aria-label", "打开对应 DSH 贴纸");
+  chip.append(link);
+  if (actions.onDelete !== undefined) {
+    const button = document.createElement("button");
+    button.className = "dsh-block-id-delete dsh-sticker-backlink-delete";
+    button.type = "button";
+    button.textContent = "×";
+    button.title = "解除当前笔记与 DSH 贴纸的双链";
+    button.setAttribute("aria-label", "删除 DSH 贴纸引用");
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      chip.remove();
+      actions.onDelete?.(target);
+    });
+    chip.append(button);
+  }
   return chip;
 }
 
 class DshStickerBacklinkWidget extends WidgetType {
-  constructor(private readonly href: string) { super(); }
+  constructor(
+    private readonly href: string,
+    private readonly target: StickerBacklinkTarget,
+    private readonly actions: DshStickerBacklinkChipActions,
+  ) { super(); }
 
   override eq(other: DshStickerBacklinkWidget): boolean {
-    return other.href === this.href;
+    return other.href === this.href
+      && other.actions.onDelete === this.actions.onDelete;
   }
 
   override toDOM(view: EditorView): HTMLElement {
-    return createStickerChip(view.dom.ownerDocument, this.href);
+    return createStickerChip(view.dom.ownerDocument, this.href, this.target, this.actions);
+  }
+
+  override ignoreEvent(): boolean {
+    return true;
   }
 }
 
 export function createDshStickerBacklinkCompactExtension(
   livePreviewField: StateField<boolean>,
+  actions: DshStickerBacklinkChipActions = {},
 ): Extension {
   const decorations = (markdown: string): DecorationSet => Decoration.set(
-    collectManagedStickerBacklinks(markdown).map(({ from, to, href }) => Decoration.replace({
+    collectManagedStickerBacklinks(markdown).map(({ from, to, href, target }) => Decoration.replace({
       inclusive: true,
-      widget: new DshStickerBacklinkWidget(href),
+      widget: new DshStickerBacklinkWidget(href, target, actions),
     }).range(from, to)),
     true,
   );
@@ -109,6 +146,21 @@ function stickerIdFromHref(href: string): string | undefined {
   catch { return undefined; }
 }
 
+function targetFromHref(href: string): StickerBacklinkTarget | undefined {
+  try {
+    const url = new URL(href);
+    const parsed = stickerBacklinkTargetSchema.safeParse({
+      stickerId: url.searchParams.get("sticker"),
+      sessionId: url.searchParams.get("session"),
+      anchorId: url.searchParams.get("anchor"),
+      quoteHash: url.searchParams.get("quoteHash"),
+    });
+    return parsed.success ? parsed.data : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function renderedLogicalLinks(root: HTMLElement): HTMLAnchorElement[] {
   const links: HTMLAnchorElement[] = [];
   if (root.matches(STICKER_LOGICAL_LINK_SELECTOR)) links.push(root as HTMLAnchorElement);
@@ -126,13 +178,17 @@ function removeRenderedStickerSourceLink(link: HTMLAnchorElement, stickerId: str
   }
 }
 
-export function compactRenderedDshStickerBacklinks(root: HTMLElement): number {
+export function compactRenderedDshStickerBacklinks(
+  root: HTMLElement,
+  actions: DshStickerBacklinkChipActions = {},
+): number {
   let count = 0;
   for (const link of renderedLogicalLinks(root)) {
     if (!link.isConnected) continue;
     const stickerId = stickerIdFromHref(link.href);
-    if (stickerId === undefined) continue;
-    const chip = createStickerChip(root.ownerDocument, link.href);
+    const target = targetFromHref(link.href);
+    if (stickerId === undefined || target === undefined) continue;
+    const chip = createStickerChip(root.ownerDocument, link.href, target, actions);
     const callout = link.closest<HTMLElement>(STICKER_REFERENCE_CALLOUT_SELECTOR);
     if (callout !== null) {
       callout.replaceWith(chip);

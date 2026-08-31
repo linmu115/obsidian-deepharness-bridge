@@ -56,7 +56,10 @@ import { cleanupOwnedPendingMarker } from "./vault/pending-reference-cleanup.ts"
 import { refreshObsidianReference } from "./vault/reference-source.ts";
 import { readSessionNote, saveSessionNote } from "./vault/session-notes.ts";
 import { listStickerBacklinks } from "./vault/sticker-backlinks.ts";
-import { deleteStickerBacklinks } from "./vault/sticker-backlink-lifecycle.ts";
+import {
+  deleteStickerBacklinkFromNote,
+  deleteStickerBacklinks,
+} from "./vault/sticker-backlink-lifecycle.ts";
 import {
   dshViewerUrlForSurface,
   ensureDshWebViewer,
@@ -130,11 +133,18 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
       },
       onDelete: (marker: string) => { void this.deleteReferencesForMarker(marker); },
     };
+    const stickerChipActions = {
+      onDelete: (target: Parameters<typeof deleteStickerBacklinkFromNote>[2]) => {
+        void this.deleteStickerBacklinkForActiveNote(target).catch((error: unknown) => {
+          new Notice(error instanceof Error ? error.message : String(error));
+        });
+      },
+    };
     this.registerEditorExtension(createDshBlockIdCompactExtension(editorLivePreviewField, chipActions));
-    this.registerEditorExtension(createDshStickerBacklinkCompactExtension(editorLivePreviewField));
+    this.registerEditorExtension(createDshStickerBacklinkCompactExtension(editorLivePreviewField, stickerChipActions));
     this.registerMarkdownPostProcessor((element) => {
       compactRenderedDshBlockIds(element, chipActions);
-      compactRenderedDshStickerBacklinks(element);
+      compactRenderedDshStickerBacklinks(element, stickerChipActions);
       hideRenderedDshReferenceBlocks(element);
     });
 
@@ -415,6 +425,19 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
     });
     new Notice("贴纸已经删除，对应的 Obsidian 回链已清理");
     return false;
+  }
+
+  private async deleteStickerBacklinkForActiveNote(
+    target: Parameters<typeof deleteStickerBacklinkFromNote>[2],
+  ): Promise<void> {
+    const notePath = this.app.workspace.getActiveFile()?.path;
+    if (notePath === undefined) throw new Error("没有找到这个贴纸气泡所属的 Obsidian 笔记");
+    const result = await deleteStickerBacklinkFromNote(this.vaultAdapter(), notePath, target);
+    if (result.linksRemoved === 0) {
+      new Notice("贴纸引用已不在当前笔记中");
+      return;
+    }
+    new Notice("已解除当前笔记与 DSH 贴纸的双链");
   }
 
   private async openReferencesForMarker(rawMarker: string, chip: HTMLElement): Promise<void> {

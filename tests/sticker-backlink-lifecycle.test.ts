@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  deleteStickerBacklinkFromNote,
   deleteStickerBacklinks,
   removeStickerBacklinksFromMarkdown,
   type StickerBacklinkVault,
@@ -67,5 +68,26 @@ describe("sticker backlink lifecycle", () => {
     await expect(deleteStickerBacklinks(vault, target)).resolves.toEqual({ notesChanged: 1, linksRemoved: 1 });
     await expect(deleteStickerBacklinks(vault, target)).resolves.toEqual({ notesChanged: 0, linksRemoved: 0 });
     expect(files.get("a.md")).toBe("");
+  });
+
+  it("unlinks only the selected note while preserving other notes that reference the sticker", async () => {
+    const metadata = JSON.stringify(target);
+    const block = `<!-- dsh-sticker-backlink:${metadata} -->\nlink\n<!-- /dsh-sticker-backlink -->\n`;
+    const files = new Map([
+      ["selected.md", block],
+      ["other.md", block],
+    ]);
+    const vault: StickerBacklinkVault = {
+      listMarkdownPaths: async () => [...files.keys()],
+      read: async (path) => files.get(path) ?? null,
+      write: async (path, content) => { files.set(path, content); },
+    };
+
+    await expect(deleteStickerBacklinkFromNote(vault, "selected.md", target))
+      .resolves.toEqual({ notesChanged: 1, linksRemoved: 1 });
+    expect(files.get("selected.md")).toBe("");
+    expect(files.get("other.md")).toBe(block);
+    await expect(deleteStickerBacklinkFromNote(vault, "selected.md", target))
+      .resolves.toEqual({ notesChanged: 0, linksRemoved: 0 });
   });
 });
