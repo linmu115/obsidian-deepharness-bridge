@@ -50,11 +50,19 @@ describe("compact sticker backlink display", () => {
     ].join(""));
     const root = dom.window.document.querySelector<HTMLElement>("#root")!;
 
-    expect(compactRenderedDshStickerBacklinks(root)).toBe(1);
+    const deleted: unknown[] = [];
+    expect(compactRenderedDshStickerBacklinks(root, {
+      onDelete: (target) => deleted.push(target),
+    })).toBe(1);
     expect(root.querySelector("a.internal-link")).toBeNull();
-    const chip = root.querySelector<HTMLAnchorElement>(".dsh-sticker-backlink-chip");
-    expect(chip?.textContent).toBe("DSH 贴纸");
-    expect(chip?.href).toBe(href);
+    const chip = root.querySelector<HTMLElement>(".dsh-sticker-backlink-chip");
+    expect(chip?.textContent).toBe("DSH 贴纸×");
+    expect(chip?.querySelector<HTMLAnchorElement>(".dsh-sticker-backlink-open")?.href).toBe(href);
+    const deleteButton = chip?.querySelector<HTMLButtonElement>(".dsh-sticker-backlink-delete");
+    expect(deleteButton?.getAttribute("aria-label")).toBe("删除 DSH 贴纸引用");
+    deleteButton?.click();
+    expect(root.querySelector(".dsh-sticker-backlink-chip")).toBeNull();
+    expect(deleted).toEqual([JSON.parse(metadata)]);
     expect(root.textContent).not.toContain("一个非常长的会话标题");
   });
 

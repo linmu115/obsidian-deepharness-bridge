@@ -92,6 +92,22 @@ export function removeStickerBacklinksFromMarkdown(
   return { source: legacy.source, linksRemoved: managed.removed + legacy.removed };
 }
 
+export async function deleteStickerBacklinkFromNote(
+  vault: StickerBacklinkVault,
+  notePath: string,
+  value: StickerBacklinkTarget,
+): Promise<StickerBacklinkDeleteResult> {
+  const target = stickerBacklinkTargetSchema.parse(value);
+  const source = await vault.read(notePath);
+  if (source === null || !source.includes(target.stickerId)) {
+    return { notesChanged: 0, linksRemoved: 0 };
+  }
+  const next = removeStickerBacklinksFromMarkdown(source, target);
+  if (next.source === source) return { notesChanged: 0, linksRemoved: 0 };
+  await vault.write(notePath, next.source);
+  return { notesChanged: 1, linksRemoved: next.linksRemoved };
+}
+
 export async function deleteStickerBacklinks(
   vault: StickerBacklinkVault,
   value: StickerBacklinkTarget,
