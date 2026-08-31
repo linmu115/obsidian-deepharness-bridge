@@ -352,7 +352,15 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
   private async commitBacklink(commit: BacklinkCommitV2) {
     const { record } = this.findCapture(commit.referenceId);
     const existing = this.data.backlinkReceipts.find((receipt) => receipt.referenceId === commit.referenceId);
-    const receipt = await commitReferenceBacklink(this.vaultAdapter(), record.capture, commit, existing);
+    const claim = record.state === "claimed" ? record.claim : undefined;
+    const stableCommit = {
+      ...commit,
+      ...(claim?.logicalSessionId ? { logicalSessionId: claim.logicalSessionId } : {}),
+      ...(claim?.logicalSessionId ? { logicalAnchorId: commit.userAnchorId } : {}),
+      legacySessionId: claim?.legacySessionId ?? commit.sessionId,
+      legacyAnchorId: commit.userAnchorId,
+    };
+    const receipt = await commitReferenceBacklink(this.vaultAdapter(), record.capture, stableCommit, existing);
     if (existing === undefined) {
       this.data = { ...this.data, backlinkReceipts: [...this.data.backlinkReceipts, receipt] };
       await this.persist();
@@ -398,6 +406,10 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
 
   private async openReferenceTarget(target: CommittedReferenceNavigationTarget): Promise<void> {
     await handleDshUrl(buildObsidianDshLink({
+      ...(target.logicalSessionId ? { logicalSessionId: target.logicalSessionId } : {}),
+      ...(target.logicalAnchorId ? { logicalAnchorId: target.logicalAnchorId } : {}),
+      ...(target.legacySessionId ? { legacySessionId: target.legacySessionId } : {}),
+      ...(target.legacyAnchorId ? { legacyAnchorId: target.legacyAnchorId } : {}),
       sessionId: target.sessionId,
       anchorId: target.userAnchorId,
       quoteHash: target.userTextHash,
@@ -414,6 +426,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
 
   private async prepareDshTarget(action: DeepLinkAction): Promise<boolean> {
     if (action.stickerId === undefined || action.quoteHash === undefined) return true;
+    if (action.logicalSessionId !== undefined) return true;
     const vault = this.vaultAdapter();
     const note = await readSessionNote(vault, action.sessionId);
     if (note.stickers.some((sticker) => sticker.stickerId === action.stickerId)) return true;
@@ -513,6 +526,10 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
         sessionId: record.claim.sessionId,
         setId: record.claim.setId,
         requestedAt: Date.now(),
+        ...(record.claim.logicalSessionId ? { logicalSessionId: record.claim.logicalSessionId } : {}),
+        ...(record.claim.logicalAnchorId ? { logicalAnchorId: record.claim.logicalAnchorId } : {}),
+        ...(record.claim.legacySessionId ? { legacySessionId: record.claim.legacySessionId } : {}),
+        ...(record.claim.legacyAnchorId ? { legacyAnchorId: record.claim.legacyAnchorId } : {}),
       });
     }
     // Persist the delete outbox before touching the note. A crash at any later

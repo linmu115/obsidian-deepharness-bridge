@@ -84,6 +84,10 @@ interface ReferenceMetadataV2 {
   userTextHash: string;
   commitDigest: string;
   blockId: string;
+  logicalSessionId?: string;
+  logicalAnchorId?: string;
+  legacySessionId?: string;
+  legacyAnchorId?: string;
 }
 
 export interface CommittedReferenceNavigationTarget {
@@ -95,7 +99,18 @@ export interface CommittedReferenceNavigationTarget {
   userMessageId: string;
   userAnchorId: string;
   userTextHash: string;
+  logicalSessionId?: string;
+  logicalAnchorId?: string;
+  legacySessionId?: string;
+  legacyAnchorId?: string;
 }
+
+type StableBacklinkCommit = BacklinkCommitV2 & {
+  readonly logicalSessionId?: string;
+  readonly logicalAnchorId?: string;
+  readonly legacySessionId?: string;
+  readonly legacyAnchorId?: string;
+};
 
 function parseV2Metadata(value: string): ReferenceMetadataV2 | null {
   let raw: unknown;
@@ -106,6 +121,11 @@ function parseV2Metadata(value: string): ReferenceMetadataV2 | null {
   for (const key of ["referenceId", "setId", "profileId", "sessionId", "userMessageId", "userAnchorId", "userTextHash", "commitDigest", "blockId"] as const) {
     if (typeof metadata[key] !== "string" || metadata[key] === "") {
       throw new ReferenceDocumentError("CORRUPT_MARKER", `A v2 dsh-reference marker is missing ${key}`);
+    }
+  }
+  for (const key of ["logicalSessionId", "logicalAnchorId", "legacySessionId", "legacyAnchorId"] as const) {
+    if (metadata[key] !== undefined && (typeof metadata[key] !== "string" || metadata[key] === "")) {
+      throw new ReferenceDocumentError("CORRUPT_MARKER", `A v2 dsh-reference marker has invalid ${key}`);
     }
   }
   return metadata as ReferenceMetadataV2;
@@ -153,6 +173,10 @@ function navigationTarget(
     userMessageId: metadata.userMessageId,
     userAnchorId: metadata.userAnchorId,
     userTextHash: metadata.userTextHash,
+    ...(metadata.logicalSessionId ? { logicalSessionId: metadata.logicalSessionId } : {}),
+    ...(metadata.logicalAnchorId ? { logicalAnchorId: metadata.logicalAnchorId } : {}),
+    ...(metadata.legacySessionId ? { legacySessionId: metadata.legacySessionId } : {}),
+    ...(metadata.legacyAnchorId ? { legacyAnchorId: metadata.legacyAnchorId } : {}),
   };
 }
 
@@ -263,7 +287,7 @@ export async function deleteCommittedReferenceBacklink(
 
 function renderV2Reference(
   capture: ObsidianReferenceCaptureV2,
-  commit: BacklinkCommitV2,
+  commit: StableBacklinkCommit,
   commitDigest: string,
   blockId: string,
 ): string {
@@ -277,8 +301,16 @@ function renderV2Reference(
     userTextHash: commit.userTextHash,
     commitDigest,
     blockId,
+    ...(commit.logicalSessionId ? { logicalSessionId: commit.logicalSessionId } : {}),
+    ...(commit.logicalAnchorId ? { logicalAnchorId: commit.logicalAnchorId } : {}),
+    ...(commit.legacySessionId ? { legacySessionId: commit.legacySessionId } : {}),
+    ...(commit.legacyAnchorId ? { legacyAnchorId: commit.legacyAnchorId } : {}),
   };
   const logicalLink = buildObsidianDshLink({
+    ...(commit.logicalSessionId ? { logicalSessionId: commit.logicalSessionId } : {}),
+    ...(commit.logicalAnchorId ? { logicalAnchorId: commit.logicalAnchorId } : {}),
+    ...(commit.legacySessionId ? { legacySessionId: commit.legacySessionId } : {}),
+    ...(commit.legacyAnchorId ? { legacyAnchorId: commit.legacyAnchorId } : {}),
     sessionId: commit.sessionId,
     anchorId: commit.userAnchorId,
     quoteHash: commit.userTextHash,
@@ -299,7 +331,7 @@ function renderV2Reference(
 export async function commitReferenceBacklink(
   vault: ReferenceVaultProcessAdapter,
   capture: ObsidianReferenceCaptureV2,
-  commit: BacklinkCommitV2,
+  commit: StableBacklinkCommit,
   existingReceipt?: BacklinkReceiptV2,
   writtenAt = Date.now(),
 ): Promise<BacklinkReceiptV2> {

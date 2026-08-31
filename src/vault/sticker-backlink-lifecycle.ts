@@ -29,7 +29,7 @@ function removeManagedBlocks(source: string, target: StickerBacklinkTarget): { s
   const output = source.replace(MANAGED_BLOCK, (block, metadataText: string) => {
     try {
       const metadata = stickerBacklinkTargetSchema.parse(JSON.parse(metadataText));
-      if (metadata.stickerId !== target.stickerId || metadata.sessionId !== target.sessionId) return block;
+      if (metadata.stickerId !== target.stickerId) return block;
       removed += 1;
       return "";
     } catch {

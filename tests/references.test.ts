@@ -120,7 +120,12 @@ describe("DSH backlink blocks", () => {
       markdown: original,
       capturedAt: 100,
     });
-    const commit: BacklinkCommitV2 = {
+    const commit: BacklinkCommitV2 & {
+      logicalSessionId: string;
+      logicalAnchorId: string;
+      legacySessionId: string;
+      legacyAnchorId: string;
+    } = {
       annotationProtocolVersion: 2,
       type: "backlink-commit",
       referenceId: capture.referenceId,
@@ -130,6 +135,10 @@ describe("DSH backlink blocks", () => {
       userMessageId: "user-message-42",
       userAnchorId: "user-node-42",
       userTextHash: "sha256:30101ebf30101ebf30101ebf30101ebf30101ebf30101ebf30101ebf30101ebf",
+      logicalSessionId: "logical-session-1",
+      logicalAnchorId: "logical-anchor-1",
+      legacySessionId: "session-demo",
+      legacyAnchorId: "user-node-42",
     };
 
     const first = await commitReferenceBacklink(vault, capture, commit, undefined, 200);
@@ -147,6 +156,10 @@ describe("DSH backlink blocks", () => {
       userMessageId: commit.userMessageId,
       userAnchorId: commit.userAnchorId,
       userTextHash: commit.userTextHash,
+      logicalSessionId: commit.logicalSessionId,
+      logicalAnchorId: commit.logicalAnchorId,
+      legacySessionId: commit.legacySessionId,
+      legacyAnchorId: commit.legacyAnchorId,
     });
     expect(vault.listCalls).toBe(0);
   });

@@ -15,6 +15,23 @@ const target = {
 };
 
 describe("sticker backlink lifecycle", () => {
+  it("removes the same logical sticker relation after the DSH native session ID changes", () => {
+    const metadata = JSON.stringify({
+      ...target,
+      logicalSessionId: "logical-session-1",
+      logicalAnchorId: "logical-anchor-1",
+    });
+    const source = `<!-- dsh-sticker-backlink:${metadata} -->\nlink\n<!-- /dsh-sticker-backlink -->\n`;
+    expect(removeStickerBacklinksFromMarkdown(source, {
+      ...target,
+      sessionId: "session-alpha2",
+      logicalSessionId: "logical-session-1",
+      logicalAnchorId: "logical-anchor-1",
+      legacySessionId: "session-demo",
+      legacyAnchorId: target.anchorId,
+    })).toEqual({ source: "", linksRemoved: 1 });
+  });
+
   it("removes managed pasted blocks without touching surrounding note content", () => {
     const metadata = JSON.stringify(target);
     const source = [

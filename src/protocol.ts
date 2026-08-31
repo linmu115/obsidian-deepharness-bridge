@@ -1,4 +1,9 @@
 import { z } from "zod";
+import {
+  ReferenceClaimV2Schema as BaseReferenceClaimV2Schema,
+  ReferenceDeleteCommitV2Schema as BaseReferenceDeleteCommitV2Schema,
+  ReferenceDeleteRequestV2Schema as BaseReferenceDeleteRequestV2Schema,
+} from "dsh-annotation-core/protocol";
 
 export {
   ANNOTATION_PROTOCOL_VERSION,
@@ -6,10 +11,7 @@ export {
   BacklinkReceiptV2Schema,
   ObsidianNoteReferenceSourceSchema,
   ObsidianReferenceCaptureV2Schema,
-  ReferenceClaimV2Schema,
   ReferenceDiscardV2Schema,
-  ReferenceDeleteCommitV2Schema,
-  ReferenceDeleteRequestV2Schema,
   ReferenceRefreshRequestV2Schema,
   ReferenceRefreshResultV2Schema,
   backlinkCommitDigest,
@@ -23,10 +25,7 @@ export type {
   BacklinkReceiptV2,
   ObsidianNoteReferenceSource,
   ObsidianReferenceCaptureV2,
-  ReferenceClaimV2,
   ReferenceDiscardV2,
-  ReferenceDeleteCommitV2,
-  ReferenceDeleteRequestV2,
   ReferenceRefreshRequestV2,
   ReferenceRefreshResultV2,
 } from "dsh-annotation-core/protocol";
@@ -35,8 +34,23 @@ export const STICKER_PROTOCOL_VERSION = 1 as const;
 /** Historical alias retained for sticker/session-note/deep-link v1 only. */
 export const PROTOCOL_VERSION = STICKER_PROTOCOL_VERSION;
 
+const stableLogicalTargetShape = {
+  logicalSessionId: z.string().min(1).optional(),
+  logicalAnchorId: z.string().min(1).optional(),
+  legacySessionId: z.string().min(1).optional(),
+  legacyAnchorId: z.string().min(1).optional(),
+};
+
+export const ReferenceClaimV2Schema = BaseReferenceClaimV2Schema.extend(stableLogicalTargetShape).strict();
+export type ReferenceClaimV2 = z.infer<typeof ReferenceClaimV2Schema>;
+export const ReferenceDeleteRequestV2Schema = BaseReferenceDeleteRequestV2Schema.extend(stableLogicalTargetShape).strict();
+export type ReferenceDeleteRequestV2 = z.infer<typeof ReferenceDeleteRequestV2Schema>;
+export const ReferenceDeleteCommitV2Schema = BaseReferenceDeleteCommitV2Schema.extend(stableLogicalTargetShape).strict();
+export type ReferenceDeleteCommitV2 = z.infer<typeof ReferenceDeleteCommitV2Schema>;
+
 export const stickerSchema = z.object({
   stickerId: z.string().uuid(),
+  ...stableLogicalTargetShape,
   sessionId: z.string().min(1),
   anchorId: z.string().min(1),
   role: z.enum(["user", "assistant"]),
@@ -54,6 +68,7 @@ export const deepLinkActionSchema = z.object({
   protocolVersion: z.literal(PROTOCOL_VERSION),
   type: z.literal("deep-link"),
   actionId: z.string().uuid(),
+  ...stableLogicalTargetShape,
   sessionId: z.string().min(1),
   anchorId: z.string().min(1),
   quoteHash: z.string().optional(),
@@ -75,6 +90,7 @@ export const openNoteActionSchema = z.object({
 
 export const stickerBacklinkTargetSchema = z.object({
   stickerId: z.string().uuid(),
+  ...stableLogicalTargetShape,
   sessionId: z.string().min(1),
   anchorId: z.string().min(1),
   quoteHash: z.string().min(1),
@@ -109,6 +125,7 @@ export const resolvedCitationSchema = z.object({
   protocolVersion: z.literal(PROTOCOL_VERSION),
   type: z.literal("resolved-citation"),
   citationId: z.string().uuid(),
+  ...stableLogicalTargetShape,
   sessionId: z.string().min(1),
   anchorId: z.string().min(1),
   role: z.literal("user"),

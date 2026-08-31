@@ -61,5 +61,9 @@ export function localDeleteCommit(
     sessionId: request.sessionId,
     setId: request.setId,
     deletedAt: request.requestedAt,
+    ...(request.logicalSessionId ? { logicalSessionId: request.logicalSessionId } : {}),
+    ...(request.logicalAnchorId ? { logicalAnchorId: request.logicalAnchorId } : {}),
+    ...(request.legacySessionId ? { legacySessionId: request.legacySessionId } : {}),
+    ...(request.legacyAnchorId ? { legacyAnchorId: request.legacyAnchorId } : {}),
   };
 }
