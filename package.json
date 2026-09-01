@@ -1,11 +1,12 @@
 {
   "name": "obsidian-deepharness-bridge",
-  "version": "0.3.23",
+  "version": "0.4.0",
   "private": true,
   "description": "Obsidian companion bridge for DeepSeek Harness conversations",
   "dshKnowledge": {
     "annotationProtocolVersion": 2,
-    "stickerProtocolVersion": 1
+    "stickerProtocolVersion": 1,
+    "bridgeLifecycleProtocolVersion": 1
   },
   "dshWorkshop": {
     "schema": "omdsh-workshop-package/v1",
@@ -58,6 +59,7 @@
     "package:companion": "node scripts/package-companion.mjs"
   },
   "dependencies": {
+    "dsh-obsidian-bridge-protocol": "link:../dsh-obsidian-bridge-protocol",
     "zod": "^4.4.3"
   },
   "devDependencies": {

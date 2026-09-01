@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      dsh-obsidian-bridge-protocol:
+        specifier: link:../dsh-obsidian-bridge-protocol
+        version: link:../dsh-obsidian-bridge-protocol
       zod:
         specifier: ^4.4.3
         version: 4.4.3

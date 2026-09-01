@@ -1,8 +1,22 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 
 import { z } from "zod";
+import {
+  BRIDGE_LIFECYCLE_PROTOCOL_VERSION,
+  acquireBridgeLeaseRequestSchema,
+  bridgeControlHandshakeRequestSchema,
+  bridgeLeaseSchema,
+  bridgeStatusSchema,
+  drainBridgeRequestSchema,
+  renewBridgeLeaseRequestSchema,
+  resumeBridgeRequestSchema,
+  type BridgeClientRole,
+  type BridgeLease,
+  type BridgeLifecycleState,
+  type BridgeStatus,
+} from "dsh-obsidian-bridge-protocol";
 
 import {
   ANNOTATION_PROTOCOL_VERSION,
@@ -46,6 +60,7 @@ import { ClientActionQueue, type QueuedBridgeMessage } from "./queue.ts";
 
 interface TokenRecord {
   clientId: string;
+  role: BridgeClientRole;
   surfaceId?: string;
   origin: string;
   expiresAt: number;
@@ -64,6 +79,8 @@ export interface BridgeServerOptions {
   tokenTtlMs?: number;
   maxBodyBytes?: number;
   now?: () => number;
+  instanceId?: string;
+  bridgeVersion?: string;
   onOpenNote?: (action: OpenNoteAction) => Promise<void>;
   onReadSessionNote?: (sessionId: string) => Promise<SessionNoteDocument | null>;
   onSaveSessionNote?: (request: SaveSessionNoteRequest) => Promise<{ revision: string }>;
@@ -79,12 +96,14 @@ export interface BridgeServerOptions {
 export interface RunningBridge {
   readonly origin: string;
   readonly tokenExpiresAt: number | null;
+  readonly identity: Pick<BridgeStatus, "instanceId" | "bootId" | "bridgeVersion" | "startedAt">;
+  status(): BridgeStatus;
   enqueue(message: QueuedBridgeMessage): number;
   close(): Promise<void>;
 }
 
 class HttpError extends Error {
-  constructor(readonly status: number, message: string) {
+  constructor(readonly status: number, message: string, readonly code?: string) {
     super(message);
   }
 }
@@ -181,19 +200,76 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
   const tokenTtlMs = options.tokenTtlMs ?? DEFAULT_TOKEN_TTL_MS;
   const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
   const now = options.now ?? Date.now;
+  const identity = {
+    lifecycleProtocolVersion: BRIDGE_LIFECYCLE_PROTOCOL_VERSION,
+    instanceId: options.instanceId?.trim() || "obsidian-deepharness-bridge",
+    bootId: randomUUID(),
+    bridgeVersion: options.bridgeVersion?.trim() || "development",
+    startedAt: now(),
+  } as const;
   if (!Number.isFinite(tokenTtlMs) || tokenTtlMs <= 0) throw new Error("Token TTL must be positive");
   if (!Number.isInteger(maxBodyBytes) || maxBodyBytes < 1) throw new Error("Maximum body size must be a positive integer");
 
   const queue = new ClientActionQueue();
   const queueId = randomBytes(16).toString("hex");
   const tokens = new Map<string, TokenRecord>();
+  const leases = new Map<string, BridgeLease>();
   const referenceClaims = new Map<string, ReferenceClaimV2>();
   const inMemoryNotes = new Map<string, SessionNoteDocument>();
   let latestTokenExpiry: number | null = null;
   let listeningOrigin = "";
   let closed = false;
+  let lifecycleState: Exclude<BridgeLifecycleState, "OFFLINE"> = "STARTING";
+  let stateChangedAt = now();
+  let inFlightRequestCount = 0;
+  let drainRequestId: string | undefined;
+  const drainWaiters = new Set<() => void>();
+
+  const setLifecycleState = (state: typeof lifecycleState): void => {
+    if (lifecycleState === state) return;
+    lifecycleState = state;
+    stateChangedAt = now();
+  };
+  const cleanupExpired = (): void => {
+    const current = now();
+    for (const [token, record] of tokens) if (record.expiresAt <= current) tokens.delete(token);
+    for (const [leaseId, lease] of leases) if (lease.expiresAt <= current) leases.delete(leaseId);
+  };
+  const lifecycleStatus = (): BridgeStatus => {
+    cleanupExpired();
+    return bridgeStatusSchema.parse({
+      ...identity,
+      state: lifecycleState,
+      stateChangedAt,
+      activeLeaseCount: leases.size,
+      inFlightRequestCount,
+      ...(drainRequestId === undefined ? {} : { drainRequestId }),
+    });
+  };
+  const assertCurrentBoot = (expectedBootId: string): void => {
+    if (expectedBootId !== identity.bootId) {
+      throw new HttpError(409, "Bridge boot identity changed", "BOOT_MISMATCH");
+    }
+  };
+  const waitForDrain = async (deadlineMs: number): Promise<void> => {
+    if (inFlightRequestCount === 0) return;
+    await new Promise<void>((resolve) => {
+      const finish = (): void => {
+        clearTimeout(timer);
+        drainWaiters.delete(finish);
+        resolve();
+      };
+      const timer = setTimeout(finish, deadlineMs);
+      drainWaiters.add(finish);
+    });
+  };
+  const finishOneRequest = (): void => {
+    inFlightRequestCount = Math.max(0, inFlightRequestCount - 1);
+    if (inFlightRequestCount === 0) for (const finish of [...drainWaiters]) finish();
+  };
 
   const server = createServer((request, response) => {
+    let countedWorkRequest = false;
     void (async () => {
       const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
       const originHeader = request.headers.origin;
@@ -206,7 +282,7 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
         if (!allowedOrigin) throw new HttpError(403, "Browser preflight requires an allowed origin");
         response.statusCode = 204;
         response.setHeader("access-control-allow-origin", allowedOrigin);
-        response.setHeader("access-control-allow-methods", "GET, POST, PUT, OPTIONS");
+        response.setHeader("access-control-allow-methods", "GET, POST, PUT, DELETE, OPTIONS");
         response.setHeader("access-control-allow-headers", "authorization, content-type");
         response.setHeader("access-control-max-age", "600");
         response.setHeader("vary", "Origin");
@@ -230,6 +306,39 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
         return;
       }
 
+      if (request.method === "GET" && requestUrl.pathname === "/control/v1/status") {
+        json(response, 200, lifecycleStatus(), allowedOrigin);
+        return;
+      }
+
+      if (request.method === "POST" && requestUrl.pathname === "/control/v1/handshake") {
+        const input = bridgeControlHandshakeRequestSchema.parse(await readJsonBody(request, maxBodyBytes));
+        if (input.expectedBootId !== undefined) assertCurrentBoot(input.expectedBootId);
+        if (input.role === "controller" && callerIdentity !== LOCAL_HOST_CALLER) {
+          throw new HttpError(403, "Only a loopback host process can hold the controller role", "NOT_CONTROLLER");
+        }
+        for (const [token, record] of tokens) {
+          if (record.clientId === input.clientId) tokens.delete(token);
+        }
+        const token = randomBytes(32).toString("base64url");
+        const expiresAt = now() + tokenTtlMs;
+        tokens.set(token, {
+          clientId: input.clientId,
+          role: input.role,
+          origin: callerIdentity,
+          expiresAt,
+        });
+        latestTokenExpiry = expiresAt;
+        json(response, 200, {
+          ...lifecycleStatus(),
+          clientId: input.clientId,
+          role: input.role,
+          token,
+          tokenExpiresAt: expiresAt,
+        }, allowedOrigin);
+        return;
+      }
+
       if (request.method === "POST" && (requestUrl.pathname === "/v1/handshake" || requestUrl.pathname === "/v2/handshake")) {
         const input = handshakeSchema.parse(await readJsonBody(request, maxBodyBytes));
         for (const [token, record] of tokens) {
@@ -239,6 +348,7 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
         const expiresAt = now() + tokenTtlMs;
         tokens.set(token, {
           clientId: input.clientId,
+          role: "surface",
           ...(input.surfaceId === undefined ? {} : { surfaceId: input.surfaceId }),
           origin: callerIdentity,
           expiresAt,
@@ -264,6 +374,88 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
         if (token) tokens.delete(token);
         throw new HttpError(401, "Handshake token is missing or expired");
       }
+
+      if (request.method === "POST" && requestUrl.pathname === "/control/v1/leases") {
+        const input = acquireBridgeLeaseRequestSchema.parse(await readJsonBody(request, maxBodyBytes));
+        assertCurrentBoot(input.expectedBootId);
+        const acquiredAt = now();
+        const lease = bridgeLeaseSchema.parse({
+          leaseId: randomUUID(),
+          clientId: authentication.clientId,
+          role: authentication.role,
+          bootId: identity.bootId,
+          acquiredAt,
+          expiresAt: acquiredAt + input.ttlMs,
+        });
+        leases.set(lease.leaseId, lease);
+        json(response, 201, lease, allowedOrigin);
+        return;
+      }
+
+      const controlLeaseMatch = /^\/control\/v1\/leases\/([^/]+)$/.exec(requestUrl.pathname);
+      if (controlLeaseMatch && request.method === "PUT") {
+        const leaseId = decodeURIComponent(controlLeaseMatch[1] ?? "");
+        const input = renewBridgeLeaseRequestSchema.parse(await readJsonBody(request, maxBodyBytes));
+        assertCurrentBoot(input.expectedBootId);
+        if (input.leaseId !== leaseId) throw new HttpError(400, "Lease ID does not match request path");
+        const existing = leases.get(leaseId);
+        if (existing === undefined || existing.clientId !== authentication.clientId) {
+          throw new HttpError(404, "Bridge lease was not found", "LEASE_NOT_FOUND");
+        }
+        const renewed = bridgeLeaseSchema.parse({ ...existing, expiresAt: now() + input.ttlMs });
+        leases.set(leaseId, renewed);
+        json(response, 200, renewed, allowedOrigin);
+        return;
+      }
+
+      if (controlLeaseMatch && request.method === "DELETE") {
+        const leaseId = decodeURIComponent(controlLeaseMatch[1] ?? "");
+        const existing = leases.get(leaseId);
+        if (existing !== undefined && existing.clientId !== authentication.clientId) {
+          throw new HttpError(403, "Bridge lease belongs to another client");
+        }
+        leases.delete(leaseId);
+        json(response, 200, { released: existing !== undefined, leaseId }, allowedOrigin);
+        return;
+      }
+
+      if (request.method === "POST" && requestUrl.pathname === "/control/v1/drain") {
+        if (authentication.role !== "controller") {
+          throw new HttpError(403, "Only the controller lease may drain the Bridge", "NOT_CONTROLLER");
+        }
+        const input = drainBridgeRequestSchema.parse(await readJsonBody(request, maxBodyBytes));
+        assertCurrentBoot(input.expectedBootId);
+        if (drainRequestId !== undefined && drainRequestId !== input.requestId && lifecycleState !== "READY") {
+          throw new HttpError(409, "A different drain request already owns this transition", "INVALID_STATE");
+        }
+        drainRequestId = input.requestId;
+        setLifecycleState("DRAINING");
+        await waitForDrain(input.deadlineMs);
+        setLifecycleState("DRAINED");
+        json(response, 200, lifecycleStatus(), allowedOrigin);
+        return;
+      }
+
+      if (request.method === "POST" && requestUrl.pathname === "/control/v1/resume") {
+        if (authentication.role !== "controller") {
+          throw new HttpError(403, "Only the controller lease may resume the Bridge", "NOT_CONTROLLER");
+        }
+        const input = resumeBridgeRequestSchema.parse(await readJsonBody(request, maxBodyBytes));
+        assertCurrentBoot(input.expectedBootId);
+        if (lifecycleState !== "DRAINED" && lifecycleState !== "DEGRADED") {
+          throw new HttpError(409, `Bridge cannot resume from ${lifecycleState}`, "INVALID_STATE");
+        }
+        drainRequestId = undefined;
+        setLifecycleState("READY");
+        json(response, 200, lifecycleStatus(), allowedOrigin);
+        return;
+      }
+
+      if (lifecycleState === "DRAINING" || lifecycleState === "DRAINED") {
+        throw new HttpError(503, "Bridge is draining and does not accept new work", "INVALID_STATE");
+      }
+      countedWorkRequest = true;
+      inFlightRequestCount += 1;
 
       if (request.method === "GET" && requestUrl.pathname === "/v1/actions/next") {
         const afterText = requestUrl.searchParams.get("after") ?? "0";
@@ -436,6 +628,8 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
         ? request.headers.origin
         : undefined;
       json(response, status, errorPayload(error), origin);
+    }).finally(() => {
+      if (countedWorkRequest) finishOneRequest();
     });
   });
 
@@ -448,9 +642,12 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
   });
   const address = server.address() as AddressInfo;
   listeningOrigin = `http://127.0.0.1:${address.port}`;
+  setLifecycleState("READY");
 
   return {
     origin: listeningOrigin,
+    identity,
+    status: lifecycleStatus,
     get tokenExpiresAt() {
       return latestTokenExpiry;
     },
@@ -468,6 +665,9 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
     async close() {
       if (closed) return;
       closed = true;
+      setLifecycleState("DRAINING");
+      await waitForDrain(5_000);
+      setLifecycleState("DRAINED");
       await new Promise<void>((resolve, reject) => {
         server.close((error) => error ? reject(error) : resolve());
       });

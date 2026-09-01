@@ -569,6 +569,8 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
       this.bridge = await startBridgeServer({
         port: this.settings.bridgePort,
         allowedDshOrigins: [this.settings.dshOrigin],
+        instanceId: this.data.vaultId,
+        bridgeVersion: this.manifest.version,
         onClaimReference: (claim) => this.claimReference(claim),
         onRefreshReference: (request) => this.refreshReference(request),
         onDiscardReference: async (request: ReferenceDiscardV2) => { await this.discardReference(request.referenceId); },

@@ -71,6 +71,75 @@ const firstAction: DeepLinkAction = {
 };
 
 describe("loopback bridge server", () => {
+  it("publishes boot identity, leases the controller, and gates work during drain", async () => {
+    const bridge = await start({ instanceId: "vault-test", bridgeVersion: "0.4.0" });
+    const initial = await request(bridge, "/control/v1/status", { headers: { origin: DSH_ORIGIN } });
+    expect(initial.status).toBe(200);
+    const status = await initial.json() as { bootId: string; state: string; instanceId: string };
+    expect(status).toMatchObject({ state: "READY", instanceId: "vault-test" });
+    expect(bridge.identity.bootId).toBe(status.bootId);
+
+    const controllerHandshake = await request(bridge, "/control/v1/handshake", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        lifecycleProtocolVersion: 1,
+        clientId: "dsh-host-controller",
+        role: "controller",
+        expectedBootId: status.bootId,
+      }),
+    });
+    expect(controllerHandshake.status).toBe(200);
+    const controller = await controllerHandshake.json() as { token: string };
+    const leaseResponse = await request(bridge, "/control/v1/leases", {
+      method: "POST",
+      headers: { authorization: `Bearer ${controller.token}`, "content-type": "application/json" },
+      body: JSON.stringify({ lifecycleProtocolVersion: 1, expectedBootId: status.bootId, ttlMs: 15_000 }),
+    });
+    expect(leaseResponse.status).toBe(201);
+    expect(await leaseResponse.json()).toMatchObject({ clientId: "dsh-host-controller", role: "controller" });
+
+    const deniedController = await request(bridge, "/control/v1/handshake", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: DSH_ORIGIN },
+      body: JSON.stringify({ lifecycleProtocolVersion: 1, clientId: "browser", role: "controller" }),
+    });
+    expect(deniedController.status).toBe(403);
+
+    const requestId = "550e8400-e29b-41d4-a716-446655440009";
+    const drained = await request(bridge, "/control/v1/drain", {
+      method: "POST",
+      headers: { authorization: `Bearer ${controller.token}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        lifecycleProtocolVersion: 1,
+        requestId,
+        expectedBootId: status.bootId,
+        deadlineMs: 1_000,
+        reason: "test drain",
+      }),
+    });
+    expect(drained.status).toBe(200);
+    expect(await drained.json()).toMatchObject({ state: "DRAINED", drainRequestId: requestId });
+
+    const dataToken = await handshakeV2(bridge, "data-after-drain");
+    const rejectedWork = await request(bridge, "/v2/actions/pending?after=0", {
+      headers: authorized(dataToken),
+    });
+    expect(rejectedWork.status).toBe(503);
+
+    const resumed = await request(bridge, "/control/v1/resume", {
+      method: "POST",
+      headers: { authorization: `Bearer ${controller.token}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        lifecycleProtocolVersion: 1,
+        requestId: "550e8400-e29b-41d4-a716-446655440010",
+        expectedBootId: status.bootId,
+      }),
+    });
+    expect(resumed.status).toBe(200);
+    expect(await resumed.json()).toMatchObject({ state: "READY" });
+  });
+
   it("reports the v2 annotation capabilities without changing sticker protocol v1", async () => {
     const bridge = await start();
     const v2 = await request(bridge, "/v2/health", { headers: { origin: DSH_ORIGIN } });

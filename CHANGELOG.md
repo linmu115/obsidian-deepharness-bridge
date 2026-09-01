@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0 - 2026-09-01
+
+- Add the versioned `/control/v1` lifecycle plane with stable instance identity, per-load boot identity, controller/surface roles, renewable leases, drain and resume.
+- Fence control mutations to the current `bootId`; browser surfaces cannot acquire the controller role or drain the external Bridge.
+- Reject new data-plane work while draining, finish in-flight requests up to the requested deadline, and expose live lease/request counts.
+
+Focused verification: all 20 test files / 117 tests, typecheck, build and package dry run.
+
 ## 0.3.23 - 2026-08-31
 
 - Persist Maintenance `logicalSessionId` and `logicalAnchorId` in DSH links and managed reference metadata while retaining native session and anchor fallbacks.
