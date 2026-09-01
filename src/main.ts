@@ -158,7 +158,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
     });
     registerDshLinkInterceptor(this, {
       app: this.app,
-      dshUrl: () => resolveDshViewerUrl(this.settings),
+      dshUrl: () => this.resolveDshViewerUrl(),
       surfaceId: this.settings.webViewerSurfaceId,
       beforeOpen: (action) => this.prepareDshTarget(action),
       enqueue: (action) => this.bridge?.enqueue(action),
@@ -170,7 +170,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
       catch (error) { new Notice(error instanceof Error ? error.message : String(error)); return; }
       void handleDshUrl(value, {
         app: this.app,
-        dshUrl: () => resolveDshViewerUrl(this.settings),
+        dshUrl: () => this.resolveDshViewerUrl(),
         surfaceId: this.settings.webViewerSurfaceId,
         beforeOpen: (action) => this.prepareDshTarget(action),
         enqueue: (action) => this.bridge?.enqueue(action),
@@ -190,10 +190,14 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
     await provisionExistingDshWebViewer(
       this.app,
       dshViewerUrlForSurface(
-        await resolveDshViewerUrl(this.settings),
+        await this.resolveDshViewerUrl(),
         this.settings.webViewerSurfaceId,
       ),
     );
+  }
+
+  private resolveDshViewerUrl(): Promise<string> {
+    return resolveDshViewerUrl(this.settings, undefined, this.bridge?.activeDshViewerUrl());
   }
 
   async updateSettings(patch: Partial<DeepHarnessBridgeSettings>): Promise<void> {
@@ -261,7 +265,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
   private async queueReference(selection: NoteSelection): Promise<void> {
     await ensureDshWebViewer(
       this.app,
-      dshViewerUrlForSurface(await resolveDshViewerUrl(this.settings), this.settings.webViewerSurfaceId),
+      dshViewerUrlForSurface(await this.resolveDshViewerUrl(), this.settings.webViewerSurfaceId),
     );
     const {
       requiresBlockIdWrite: _requiresBlockIdWrite,
@@ -417,7 +421,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
       referenceId: target.referenceId,
     }), {
       app: this.app,
-      dshUrl: () => resolveDshViewerUrl(this.settings),
+      dshUrl: () => this.resolveDshViewerUrl(),
       surfaceId: this.settings.webViewerSurfaceId,
       beforeOpen: (action) => this.prepareDshTarget(action),
       enqueue: (action) => this.bridge?.enqueue(action),

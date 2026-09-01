@@ -98,6 +98,7 @@ export interface RunningBridge {
   readonly tokenExpiresAt: number | null;
   readonly identity: Pick<BridgeStatus, "instanceId" | "bootId" | "bridgeVersion" | "startedAt">;
   status(): BridgeStatus;
+  activeDshViewerUrl(): string | undefined;
   enqueue(message: QueuedBridgeMessage): number;
   close(): Promise<void>;
 }
@@ -255,6 +256,15 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
       ...(drainRequestId === undefined ? {} : { drainRequestId }),
     });
   };
+  const activeDshViewerUrl = (): string | undefined => {
+    cleanupExpired();
+    return [...leases.values()]
+      .filter((lease) => lease.role === "controller" && lease.dshViewerUrl !== undefined)
+      .sort((left, right) => right.expiresAt - left.expiresAt
+        || right.acquiredAt - left.acquiredAt
+        || right.leaseId.localeCompare(left.leaseId))[0]
+      ?.dshViewerUrl;
+  };
   const assertCurrentBoot = (expectedBootId: string): void => {
     if (expectedBootId !== identity.bootId) {
       throw new HttpError(409, "Bridge boot identity changed", "BOOT_MISMATCH");
@@ -386,8 +396,8 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
 
       if (request.method === "POST" && requestUrl.pathname === "/control/v1/leases") {
         const input = acquireBridgeLeaseRequestSchema.parse(await readJsonBody(request, maxBodyBytes));
-        if (authentication.role !== "controller" && input.browserOrigins.length > 0) {
-          throw new HttpError(403, "Only a loopback host controller may authorize browser origins", "NOT_CONTROLLER");
+        if (authentication.role !== "controller" && (input.browserOrigins.length > 0 || input.dshViewerUrl !== undefined)) {
+          throw new HttpError(403, "Only a loopback host controller may authorize browser origins or a DSH Viewer URL", "NOT_CONTROLLER");
         }
         assertCurrentBoot(input.expectedBootId);
         const acquiredAt = now();
@@ -399,6 +409,7 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
           acquiredAt,
           expiresAt: acquiredAt + input.ttlMs,
           browserOrigins: input.browserOrigins,
+          ...(input.dshViewerUrl === undefined ? {} : { dshViewerUrl: input.dshViewerUrl }),
         });
         if (authentication.role === "controller") controllerLeaseSeen = true;
         leases.set(lease.leaseId, lease);
@@ -410,8 +421,8 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
       if (controlLeaseMatch && request.method === "PUT") {
         const leaseId = decodeURIComponent(controlLeaseMatch[1] ?? "");
         const input = renewBridgeLeaseRequestSchema.parse(await readJsonBody(request, maxBodyBytes));
-        if (authentication.role !== "controller" && input.browserOrigins.length > 0) {
-          throw new HttpError(403, "Only a loopback host controller may authorize browser origins", "NOT_CONTROLLER");
+        if (authentication.role !== "controller" && (input.browserOrigins.length > 0 || input.dshViewerUrl !== undefined)) {
+          throw new HttpError(403, "Only a loopback host controller may authorize browser origins or a DSH Viewer URL", "NOT_CONTROLLER");
         }
         assertCurrentBoot(input.expectedBootId);
         if (input.leaseId !== leaseId) throw new HttpError(400, "Lease ID does not match request path");
@@ -423,6 +434,7 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
           ...existing,
           expiresAt: now() + input.ttlMs,
           browserOrigins: input.browserOrigins,
+          dshViewerUrl: input.dshViewerUrl,
         });
         leases.set(leaseId, renewed);
         json(response, 200, renewed, allowedOrigin);
@@ -669,6 +681,7 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
     origin: listeningOrigin,
     identity,
     status: lifecycleStatus,
+    activeDshViewerUrl,
     get tokenExpiresAt() {
       return latestTokenExpiry;
     },

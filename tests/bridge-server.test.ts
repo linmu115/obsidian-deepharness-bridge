@@ -149,6 +149,7 @@ describe("loopback bridge server", () => {
   it("authorizes a dynamic browser origin only for the lifetime of its controller lease", async () => {
     let timestamp = 1_000;
     const dynamicOrigin = "http://127.0.0.1:23686";
+    const dynamicViewerUrl = `${dynamicOrigin}/?token=current`;
     const bridge = await start({ now: () => timestamp });
     const status = bridge.status();
     const controllerHandshake = await request(bridge, "/control/v1/handshake", {
@@ -170,11 +171,14 @@ describe("loopback bridge server", () => {
         expectedBootId: status.bootId,
         ttlMs: 1_000,
         browserOrigins: [dynamicOrigin],
+        dshViewerUrl: dynamicViewerUrl,
       }),
     });
     expect(leaseResponse.status).toBe(201);
-    const lease = await leaseResponse.json() as { leaseId: string; browserOrigins: string[] };
+    const lease = await leaseResponse.json() as { leaseId: string; browserOrigins: string[]; dshViewerUrl: string };
     expect(lease.browserOrigins).toEqual([dynamicOrigin]);
+    expect(lease.dshViewerUrl).toBe(dynamicViewerUrl);
+    expect(bridge.activeDshViewerUrl()).toBe(dynamicViewerUrl);
 
     const allowed = await request(bridge, "/v2/health", { headers: { origin: dynamicOrigin } });
     expect(allowed.status).toBe(200);
@@ -185,6 +189,7 @@ describe("loopback bridge server", () => {
       headers: { authorization: `Bearer ${controller.token}` },
     });
     expect(released.status).toBe(200);
+    expect(bridge.activeDshViewerUrl()).toBeUndefined();
     expect((await request(bridge, "/v2/health", { headers: { origin: dynamicOrigin } })).status).toBe(403);
     expect((await request(bridge, "/v2/health", { headers: { origin: DSH_ORIGIN } })).status).toBe(403);
 
@@ -196,10 +201,12 @@ describe("loopback bridge server", () => {
         expectedBootId: status.bootId,
         ttlMs: 1_000,
         browserOrigins: [dynamicOrigin],
+        dshViewerUrl: dynamicViewerUrl,
       }),
     });
     expect(reacquired.status).toBe(201);
     timestamp += 1_001;
+    expect(bridge.activeDshViewerUrl()).toBeUndefined();
     expect((await request(bridge, "/v2/health", { headers: { origin: dynamicOrigin } })).status).toBe(403);
   });
 

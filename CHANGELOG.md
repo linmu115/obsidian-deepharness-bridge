@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.0 - 2026-09-01
+
+- Resolve Obsidian-to-DSH navigation through the current controller lease before consulting static settings or launch logs.
+- Revoke the dynamic Viewer target automatically when its DSH controller lease is released, expires, or restarts.
+- Preserve the configured origin and launch-log resolver only as an offline/pre-controller compatibility fallback.
+
 ## 0.5.0 - 2026-09-01
 
 - Authorize exact loopback DSH browser origins through controller leases.

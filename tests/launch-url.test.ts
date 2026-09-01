@@ -45,4 +45,14 @@ describe("authenticated DSH Web Viewer launch URL", () => {
     }, readLog)).resolves.toBe("http://127.0.0.1:3080/");
     expect(readLog).toHaveBeenCalledTimes(2);
   });
+
+  it("prefers the active controller lease over stale settings and launch logs", async () => {
+    const readLog = vi.fn(async () => "dsh web: http://127.0.0.1:3080/?token=stale");
+    await expect(resolveDshViewerUrl({
+      dshOrigin: "http://127.0.0.1:3080",
+      dshLaunchLogPath: "D:\\stale.log",
+    }, readLog, "http://127.0.0.1:61032/?token=current")).resolves
+      .toBe("http://127.0.0.1:61032/?token=current");
+    expect(readLog).not.toHaveBeenCalled();
+  });
 });
