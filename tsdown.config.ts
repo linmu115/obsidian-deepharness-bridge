@@ -11,8 +11,8 @@ export default defineConfig({
   sourcemap: true,
   deps: {
     neverBundle: ["obsidian", "electron", "@codemirror/state", "@codemirror/view"],
-    alwaysBundle: ["zod", "dsh-annotation-core"],
-    onlyBundle: ["zod", "dsh-annotation-core"],
+    alwaysBundle: ["zod", "dsh-annotation-core", "dsh-obsidian-bridge-protocol"],
+    onlyBundle: ["zod", "dsh-annotation-core", "dsh-obsidian-bridge-protocol"],
   },
   outputOptions: {
     entryFileNames: "main.js",

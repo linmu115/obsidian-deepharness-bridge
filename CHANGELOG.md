@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1 - 2026-09-01
+
+- Bundle the Bridge lifecycle protocol into the standalone Obsidian main.js artifact so the plugin does not require a node_modules directory at runtime.
+- Add a packaged-bundle regression check that rejects unresolved runtime imports of the lifecycle protocol.
+
+Focused verification: all Bridge tests, typecheck, standalone build and package dry run.
+
 ## 0.4.0 - 2026-09-01
 
 - Add the versioned `/control/v1` lifecycle plane with stable instance identity, per-load boot identity, controller/surface roles, renewable leases, drain and resume.
