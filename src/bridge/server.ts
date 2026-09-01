@@ -195,7 +195,7 @@ function canonical(value: unknown): string {
 }
 
 export async function startBridgeServer(options: BridgeServerOptions = {}): Promise<RunningBridge> {
-  const allowedOrigins = new Set((options.allowedDshOrigins ?? []).map(normalizeLoopbackOrigin));
+  const configuredOrigins = new Set((options.allowedDshOrigins ?? []).map(normalizeLoopbackOrigin));
   const port = validateBridgePort(options.port ?? DEFAULT_BRIDGE_PORT);
   const tokenTtlMs = options.tokenTtlMs ?? DEFAULT_TOKEN_TTL_MS;
   const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
@@ -222,6 +222,7 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
   let lifecycleState: Exclude<BridgeLifecycleState, "OFFLINE"> = "STARTING";
   let stateChangedAt = now();
   let inFlightRequestCount = 0;
+  let controllerLeaseSeen = false;
   let drainRequestId: string | undefined;
   const drainWaiters = new Set<() => void>();
 
@@ -234,6 +235,14 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
     const current = now();
     for (const [token, record] of tokens) if (record.expiresAt <= current) tokens.delete(token);
     for (const [leaseId, lease] of leases) if (lease.expiresAt <= current) leases.delete(leaseId);
+  };
+  const isAllowedBrowserOrigin = (origin: string): boolean => {
+    cleanupExpired();
+    if (!controllerLeaseSeen && configuredOrigins.has(origin)) return true;
+    for (const lease of leases.values()) {
+      if (lease.role === "controller" && lease.browserOrigins.includes(origin)) return true;
+    }
+    return false;
   };
   const lifecycleStatus = (): BridgeStatus => {
     cleanupExpired();
@@ -274,7 +283,7 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
       const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
       const originHeader = request.headers.origin;
       const requestOrigin = typeof originHeader === "string" ? originHeader : undefined;
-      const allowedOrigin = requestOrigin && allowedOrigins.has(requestOrigin) ? requestOrigin : undefined;
+      const allowedOrigin = requestOrigin && isAllowedBrowserOrigin(requestOrigin) ? requestOrigin : undefined;
       const callerIdentity = allowedOrigin ?? (requestOrigin === undefined ? LOCAL_HOST_CALLER : undefined);
       if (!callerIdentity) throw new HttpError(403, "Request origin is not allowed");
 
@@ -377,6 +386,9 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
 
       if (request.method === "POST" && requestUrl.pathname === "/control/v1/leases") {
         const input = acquireBridgeLeaseRequestSchema.parse(await readJsonBody(request, maxBodyBytes));
+        if (authentication.role !== "controller" && input.browserOrigins.length > 0) {
+          throw new HttpError(403, "Only a loopback host controller may authorize browser origins", "NOT_CONTROLLER");
+        }
         assertCurrentBoot(input.expectedBootId);
         const acquiredAt = now();
         const lease = bridgeLeaseSchema.parse({
@@ -386,7 +398,9 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
           bootId: identity.bootId,
           acquiredAt,
           expiresAt: acquiredAt + input.ttlMs,
+          browserOrigins: input.browserOrigins,
         });
+        if (authentication.role === "controller") controllerLeaseSeen = true;
         leases.set(lease.leaseId, lease);
         json(response, 201, lease, allowedOrigin);
         return;
@@ -396,13 +410,20 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
       if (controlLeaseMatch && request.method === "PUT") {
         const leaseId = decodeURIComponent(controlLeaseMatch[1] ?? "");
         const input = renewBridgeLeaseRequestSchema.parse(await readJsonBody(request, maxBodyBytes));
+        if (authentication.role !== "controller" && input.browserOrigins.length > 0) {
+          throw new HttpError(403, "Only a loopback host controller may authorize browser origins", "NOT_CONTROLLER");
+        }
         assertCurrentBoot(input.expectedBootId);
         if (input.leaseId !== leaseId) throw new HttpError(400, "Lease ID does not match request path");
         const existing = leases.get(leaseId);
         if (existing === undefined || existing.clientId !== authentication.clientId) {
           throw new HttpError(404, "Bridge lease was not found", "LEASE_NOT_FOUND");
         }
-        const renewed = bridgeLeaseSchema.parse({ ...existing, expiresAt: now() + input.ttlMs });
+        const renewed = bridgeLeaseSchema.parse({
+          ...existing,
+          expiresAt: now() + input.ttlMs,
+          browserOrigins: input.browserOrigins,
+        });
         leases.set(leaseId, renewed);
         json(response, 200, renewed, allowedOrigin);
         return;
@@ -624,7 +645,7 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
         return;
       }
       const status = error instanceof HttpError ? error.status : applicationErrorStatus(error) ?? 500;
-      const origin = typeof request.headers.origin === "string" && allowedOrigins.has(request.headers.origin)
+      const origin = typeof request.headers.origin === "string" && isAllowedBrowserOrigin(request.headers.origin)
         ? request.headers.origin
         : undefined;
       json(response, status, errorPayload(error), origin);

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.0 - 2026-09-01
+
+- Authorize exact loopback DSH browser origins through controller leases.
+- Revoke dynamic browser origins automatically on lease release, expiry, or Bridge restart.
+- Use the configured static origin only as a pre-controller compatibility fallback; after a protocol-v2 controller appears, browser access is exclusively lease-scoped without allowing wildcards.
+
 ## 0.4.1 - 2026-09-01
 
 - Bundle the Bridge lifecycle protocol into the standalone Obsidian main.js artifact so the plugin does not require a node_modules directory at runtime.
