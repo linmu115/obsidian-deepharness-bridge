@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { BRIDGE_LIFECYCLE_PROTOCOL_VERSION } from "dsh-obsidian-bridge-protocol";
 
 import { startBridgeServer, type RunningBridge } from "../src/bridge/server.ts";
 import type { BacklinkCommitV2, DeepLinkAction, ReferenceDeleteCommitV2, ReferenceDeleteRequestV2 } from "../src/protocol.ts";
@@ -83,7 +84,7 @@ describe("loopback bridge server", () => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        lifecycleProtocolVersion: 1,
+        lifecycleProtocolVersion: BRIDGE_LIFECYCLE_PROTOCOL_VERSION,
         clientId: "dsh-host-controller",
         role: "controller",
         expectedBootId: status.bootId,
@@ -94,7 +95,12 @@ describe("loopback bridge server", () => {
     const leaseResponse = await request(bridge, "/control/v1/leases", {
       method: "POST",
       headers: { authorization: `Bearer ${controller.token}`, "content-type": "application/json" },
-      body: JSON.stringify({ lifecycleProtocolVersion: 1, expectedBootId: status.bootId, ttlMs: 15_000 }),
+      body: JSON.stringify({
+        lifecycleProtocolVersion: BRIDGE_LIFECYCLE_PROTOCOL_VERSION,
+        expectedBootId: status.bootId,
+        ttlMs: 15_000,
+        browserOrigins: [DSH_ORIGIN],
+      }),
     });
     expect(leaseResponse.status).toBe(201);
     expect(await leaseResponse.json()).toMatchObject({ clientId: "dsh-host-controller", role: "controller" });
@@ -102,7 +108,7 @@ describe("loopback bridge server", () => {
     const deniedController = await request(bridge, "/control/v1/handshake", {
       method: "POST",
       headers: { "content-type": "application/json", origin: DSH_ORIGIN },
-      body: JSON.stringify({ lifecycleProtocolVersion: 1, clientId: "browser", role: "controller" }),
+      body: JSON.stringify({ lifecycleProtocolVersion: BRIDGE_LIFECYCLE_PROTOCOL_VERSION, clientId: "browser", role: "controller" }),
     });
     expect(deniedController.status).toBe(403);
 
@@ -111,7 +117,7 @@ describe("loopback bridge server", () => {
       method: "POST",
       headers: { authorization: `Bearer ${controller.token}`, "content-type": "application/json" },
       body: JSON.stringify({
-        lifecycleProtocolVersion: 1,
+        lifecycleProtocolVersion: BRIDGE_LIFECYCLE_PROTOCOL_VERSION,
         requestId,
         expectedBootId: status.bootId,
         deadlineMs: 1_000,
@@ -131,13 +137,70 @@ describe("loopback bridge server", () => {
       method: "POST",
       headers: { authorization: `Bearer ${controller.token}`, "content-type": "application/json" },
       body: JSON.stringify({
-        lifecycleProtocolVersion: 1,
+        lifecycleProtocolVersion: BRIDGE_LIFECYCLE_PROTOCOL_VERSION,
         requestId: "550e8400-e29b-41d4-a716-446655440010",
         expectedBootId: status.bootId,
       }),
     });
     expect(resumed.status).toBe(200);
     expect(await resumed.json()).toMatchObject({ state: "READY" });
+  });
+
+  it("authorizes a dynamic browser origin only for the lifetime of its controller lease", async () => {
+    let timestamp = 1_000;
+    const dynamicOrigin = "http://127.0.0.1:23686";
+    const bridge = await start({ now: () => timestamp });
+    const status = bridge.status();
+    const controllerHandshake = await request(bridge, "/control/v1/handshake", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        lifecycleProtocolVersion: BRIDGE_LIFECYCLE_PROTOCOL_VERSION,
+        clientId: "dynamic-origin-controller",
+        role: "controller",
+        expectedBootId: status.bootId,
+      }),
+    });
+    const controller = await controllerHandshake.json() as { token: string };
+    const leaseResponse = await request(bridge, "/control/v1/leases", {
+      method: "POST",
+      headers: { authorization: `Bearer ${controller.token}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        lifecycleProtocolVersion: BRIDGE_LIFECYCLE_PROTOCOL_VERSION,
+        expectedBootId: status.bootId,
+        ttlMs: 1_000,
+        browserOrigins: [dynamicOrigin],
+      }),
+    });
+    expect(leaseResponse.status).toBe(201);
+    const lease = await leaseResponse.json() as { leaseId: string; browserOrigins: string[] };
+    expect(lease.browserOrigins).toEqual([dynamicOrigin]);
+
+    const allowed = await request(bridge, "/v2/health", { headers: { origin: dynamicOrigin } });
+    expect(allowed.status).toBe(200);
+    expect(allowed.headers.get("access-control-allow-origin")).toBe(dynamicOrigin);
+
+    const released = await request(bridge, `/control/v1/leases/${lease.leaseId}`, {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${controller.token}` },
+    });
+    expect(released.status).toBe(200);
+    expect((await request(bridge, "/v2/health", { headers: { origin: dynamicOrigin } })).status).toBe(403);
+    expect((await request(bridge, "/v2/health", { headers: { origin: DSH_ORIGIN } })).status).toBe(403);
+
+    const reacquired = await request(bridge, "/control/v1/leases", {
+      method: "POST",
+      headers: { authorization: `Bearer ${controller.token}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        lifecycleProtocolVersion: BRIDGE_LIFECYCLE_PROTOCOL_VERSION,
+        expectedBootId: status.bootId,
+        ttlMs: 1_000,
+        browserOrigins: [dynamicOrigin],
+      }),
+    });
+    expect(reacquired.status).toBe(201);
+    timestamp += 1_001;
+    expect((await request(bridge, "/v2/health", { headers: { origin: dynamicOrigin } })).status).toBe(403);
   });
 
   it("reports the v2 annotation capabilities without changing sticker protocol v1", async () => {
