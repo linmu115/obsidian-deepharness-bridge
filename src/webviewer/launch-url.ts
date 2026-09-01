@@ -26,7 +26,11 @@ export function launchUrlFromLog(log: string, expectedOrigin: string): string {
 export async function resolveDshViewerUrl(
   settings: Pick<DeepHarnessBridgeSettings, "dshOrigin" | "dshLaunchLogPath">,
   readLaunchLog: ReadLaunchLog = async (path) => readFile(path, "utf8"),
+  activeDshViewerUrl?: string,
 ): Promise<string> {
+  if (activeDshViewerUrl !== undefined) {
+    return checkedViewerUrl(activeDshViewerUrl, new URL(activeDshViewerUrl).origin);
+  }
   const path = settings.dshLaunchLogPath.trim();
   if (!path) return checkedViewerUrl(settings.dshOrigin, settings.dshOrigin);
   let log: string;
