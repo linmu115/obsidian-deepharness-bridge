@@ -60,7 +60,7 @@
     "package:companion": "node scripts/package-companion.mjs"
   },
   "dependencies": {
-    "dsh-obsidian-bridge-protocol": "link:../dsh-obsidian-bridge-protocol",
+    "dsh-obsidian-bridge-protocol": "git+https://github.com/linmu115/dsh-obsidian-bridge-protocol.git#cfb069a5a09dacfb2e4f64a26036dfe514225132",
     "zod": "4.4.3"
   },
   "devDependencies": {
@@ -68,7 +68,7 @@
     "@codemirror/view": "6.38.6",
     "@types/jsdom": "21.1.7",
     "@types/node": "^24.3.0",
-    "dsh-annotation-core": "git+https://github.com/linmu115/dsh-annotation-core.git#d7b0de917c7673d06dbd30790f7eed960ae82915",
+    "dsh-annotation-core": "git+https://github.com/linmu115/dsh-annotation-core.git#de5c6d3e4784cfcfa4cc90b4e8c29d75a36a2161",
     "jsdom": "26.1.0",
     "obsidian": "^1.13.1",
     "tar": "^7.5.1",
