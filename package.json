@@ -1,6 +1,6 @@
 {
   "name": "obsidian-deepharness-bridge",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "private": true,
   "description": "Obsidian companion bridge for DeepSeek Harness conversations",
   "dshKnowledge": {
@@ -61,14 +61,14 @@
   },
   "dependencies": {
     "dsh-obsidian-bridge-protocol": "link:../dsh-obsidian-bridge-protocol",
-    "zod": "^4.4.3"
+    "zod": "4.4.3"
   },
   "devDependencies": {
     "@codemirror/state": "6.5.0",
     "@codemirror/view": "6.38.6",
     "@types/jsdom": "21.1.7",
     "@types/node": "^24.3.0",
-    "dsh-annotation-core": "git+https://github.com/linmu115/dsh-annotation-core.git#codex/bidirectional-reference-delete",
+    "dsh-annotation-core": "git+https://github.com/linmu115/dsh-annotation-core.git#d7b0de917c7673d06dbd30790f7eed960ae82915",
     "jsdom": "26.1.0",
     "obsidian": "^1.13.1",
     "tar": "^7.5.1",

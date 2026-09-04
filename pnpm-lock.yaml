@@ -12,7 +12,7 @@ importers:
         specifier: link:../dsh-obsidian-bridge-protocol
         version: link:../dsh-obsidian-bridge-protocol
       zod:
-        specifier: ^4.4.3
+        specifier: 4.4.3
         version: 4.4.3
     devDependencies:
       '@codemirror/state':
@@ -28,8 +28,8 @@ importers:
         specifier: ^24.3.0
         version: 24.13.3
       dsh-annotation-core:
-        specifier: git+https://github.com/linmu115/dsh-annotation-core.git#codex/bidirectional-reference-delete
-        version: https://codeload.github.com/linmu115/dsh-annotation-core/tar.gz/dc150bd44ad0cec83d5af6b4e5387f16dccac7a8
+        specifier: git+https://github.com/linmu115/dsh-annotation-core.git#d7b0de917c7673d06dbd30790f7eed960ae82915
+        version: https://codeload.github.com/linmu115/dsh-annotation-core/tar.gz/d7b0de917c7673d06dbd30790f7eed960ae82915
       jsdom:
         specifier: 26.1.0
         version: 26.1.0
@@ -90,12 +90,6 @@ packages:
   '@csstools/css-tokenizer@3.0.4':
     resolution: {integrity: sha512-Vd/9EVDiu6PPJt9yAh6roZP6El1xHrdvIVGjyBsHR0RYwNHgL7FJPyIIW4fANJNG6FtyZfvlRPpFI4ZM/lubvw==}
     engines: {node: '>=18'}
-
-  '@deepseek-ai/cosmokit@1.8.2':
-    resolution: {integrity: sha512-muBOKtSrUKU5m/xpq8ZXWL6hQ/jgd4PhU2PqH97bcxIiLEJfNwZOGQEx4t/aS/GgxRAR+ra9pMHPMtTHU4sqqA==}
-
-  '@deepseek-ai/schemastery@3.18.1':
-    resolution: {integrity: sha512-Qn0FCSwCQnpnj6SB31I6i2sIKgKWnkbJM8O0EU91Gv2UsYVvtZTl6IA0sCwk2e2MZf5S8w5hpq9QkeVvK9qwxg==}
 
   '@isaacs/fs-minipass@4.0.1':
     resolution: {integrity: sha512-wgm9Ehl2jpeqP3zw/7mo3kRHFp5MEDhqAdwy1fTGkHAwnkGOVsgpvQhL8B5n1qlb01jV3n/bI0ZfZp5lWA1k4w==}
@@ -460,9 +454,9 @@ packages:
     resolution: {integrity: sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ==}
     engines: {node: '>=8'}
 
-  dsh-annotation-core@https://codeload.github.com/linmu115/dsh-annotation-core/tar.gz/dc150bd44ad0cec83d5af6b4e5387f16dccac7a8:
-    resolution: {gitHosted: true, tarball: https://codeload.github.com/linmu115/dsh-annotation-core/tar.gz/dc150bd44ad0cec83d5af6b4e5387f16dccac7a8}
-    version: 0.3.2
+  dsh-annotation-core@https://codeload.github.com/linmu115/dsh-annotation-core/tar.gz/d7b0de917c7673d06dbd30790f7eed960ae82915:
+    resolution: {gitHosted: true, tarball: https://codeload.github.com/linmu115/dsh-annotation-core/tar.gz/d7b0de917c7673d06dbd30790f7eed960ae82915}
+    version: 0.3.6
     engines: {node: '>=20'}
     peerDependencies:
       '@deepseek-ai/cordis': '*'
@@ -475,6 +469,7 @@ packages:
       '@deepseek-ai/dsh-storage-domain': '*'
       '@deepseek-ai/dsh-system-prompt': '*'
       '@deepseek-ai/dsh-typert-protocol': '*'
+      '@deepseek-ai/schemastery': '*'
       react: '*'
       react-dom: '*'
     peerDependenciesMeta:
@@ -497,6 +492,8 @@ packages:
       '@deepseek-ai/dsh-system-prompt':
         optional: true
       '@deepseek-ai/dsh-typert-protocol':
+        optional: true
+      '@deepseek-ai/schemastery':
         optional: true
       react:
         optional: true
@@ -1060,13 +1057,6 @@ snapshots:
 
   '@csstools/css-tokenizer@3.0.4': {}
 
-  '@deepseek-ai/cosmokit@1.8.2': {}
-
-  '@deepseek-ai/schemastery@3.18.1':
-    dependencies:
-      '@deepseek-ai/cosmokit': 1.8.2
-      '@standard-schema/spec': 1.1.0
-
   '@isaacs/fs-minipass@4.0.1':
     dependencies:
       minipass: 7.1.3
@@ -1310,9 +1300,8 @@ snapshots:
 
   detect-libc@2.1.2: {}
 
-  dsh-annotation-core@https://codeload.github.com/linmu115/dsh-annotation-core/tar.gz/dc150bd44ad0cec83d5af6b4e5387f16dccac7a8:
+  dsh-annotation-core@https://codeload.github.com/linmu115/dsh-annotation-core/tar.gz/d7b0de917c7673d06dbd30790f7eed960ae82915:
     dependencies:
-      '@deepseek-ai/schemastery': 3.18.1
       zod: 4.4.3
 
   dts-resolver@3.0.0: {}
