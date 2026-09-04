@@ -3,13 +3,16 @@
 ## 0.6.1 - 2026-09-04
 
 - Build the unchanged Obsidian companion against public Annotation Core commit
-  `d7b0de917c7673d06dbd30790f7eed960ae82915` and the suite-wide Zod 4.4.3
+  `de5c6d3e4784cfcfa4cc90b4e8c29d75a36a2161`, Bridge Protocol commit
+  `cfb069a5a09dacfb2e4f64a26036dfe514225132`, and the suite-wide Zod 4.4.3
   identity. The RC1 runtime still requires Core 0.3.7 to be installed first.
 - Preserve compact reference and sticker chips, immediate local deletion,
   backlink unlink, surface-targeted one-shot navigation, and Bridge lifecycle
   behavior.
 
 No Vault format, Bridge wire protocol, or DSH link behavior was changed.
+Clean-checkout verification no longer depends on sibling repositories being
+present beside the Obsidian plugin checkout.
 
 ## 0.6.0 - 2026-09-01
 

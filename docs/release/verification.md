@@ -15,7 +15,9 @@ pnpm pack --dry-run --json
 Acceptance criteria:
 
 - annotation protocol types resolve from public full Git commit
-  `d7b0de917c7673d06dbd30790f7eed960ae82915`, never a local path;
+  `de5c6d3e4784cfcfa4cc90b4e8c29d75a36a2161`, never a local path;
+- Bridge protocol types resolve from public full Git commit
+  `cfb069a5a09dacfb2e4f64a26036dfe514225132`, never a local path;
 - all bridge, migration, workspace, selection, and vault tests pass;
 - `main.js`, `manifest.json`, and `versions.json` carry the same release version;
 - the GitHub Release contains `main.js`, `manifest.json`, and `versions.json` as directly downloadable assets.

@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       dsh-obsidian-bridge-protocol:
-        specifier: link:../dsh-obsidian-bridge-protocol
-        version: link:../dsh-obsidian-bridge-protocol
+        specifier: git+https://github.com/linmu115/dsh-obsidian-bridge-protocol.git#cfb069a5a09dacfb2e4f64a26036dfe514225132
+        version: https://codeload.github.com/linmu115/dsh-obsidian-bridge-protocol/tar.gz/cfb069a5a09dacfb2e4f64a26036dfe514225132
       zod:
         specifier: 4.4.3
         version: 4.4.3
@@ -28,8 +28,8 @@ importers:
         specifier: ^24.3.0
         version: 24.13.3
       dsh-annotation-core:
-        specifier: git+https://github.com/linmu115/dsh-annotation-core.git#d7b0de917c7673d06dbd30790f7eed960ae82915
-        version: https://codeload.github.com/linmu115/dsh-annotation-core/tar.gz/d7b0de917c7673d06dbd30790f7eed960ae82915
+        specifier: git+https://github.com/linmu115/dsh-annotation-core.git#de5c6d3e4784cfcfa4cc90b4e8c29d75a36a2161
+        version: https://codeload.github.com/linmu115/dsh-annotation-core/tar.gz/de5c6d3e4784cfcfa4cc90b4e8c29d75a36a2161
       jsdom:
         specifier: 26.1.0
         version: 26.1.0
@@ -454,9 +454,9 @@ packages:
     resolution: {integrity: sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ==}
     engines: {node: '>=8'}
 
-  dsh-annotation-core@https://codeload.github.com/linmu115/dsh-annotation-core/tar.gz/d7b0de917c7673d06dbd30790f7eed960ae82915:
-    resolution: {gitHosted: true, tarball: https://codeload.github.com/linmu115/dsh-annotation-core/tar.gz/d7b0de917c7673d06dbd30790f7eed960ae82915}
-    version: 0.3.6
+  dsh-annotation-core@https://codeload.github.com/linmu115/dsh-annotation-core/tar.gz/de5c6d3e4784cfcfa4cc90b4e8c29d75a36a2161:
+    resolution: {gitHosted: true, tarball: https://codeload.github.com/linmu115/dsh-annotation-core/tar.gz/de5c6d3e4784cfcfa4cc90b4e8c29d75a36a2161}
+    version: 0.3.7
     engines: {node: '>=20'}
     peerDependencies:
       '@deepseek-ai/cordis': '*'
@@ -499,6 +499,10 @@ packages:
         optional: true
       react-dom:
         optional: true
+
+  dsh-obsidian-bridge-protocol@https://codeload.github.com/linmu115/dsh-obsidian-bridge-protocol/tar.gz/cfb069a5a09dacfb2e4f64a26036dfe514225132:
+    resolution: {gitHosted: true, tarball: https://codeload.github.com/linmu115/dsh-obsidian-bridge-protocol/tar.gz/cfb069a5a09dacfb2e4f64a26036dfe514225132}
+    version: 0.3.1
 
   dts-resolver@3.0.0:
     resolution: {integrity: sha512-1T1f+z+4tl9XD+m+0HBgWoL/nm0bOIffyWaUuUSBlFg/86IWvfx+wjNaO/ybU0AJzG9/Mi5hBUgGV6zCmWEN7Q==}
@@ -1300,7 +1304,11 @@ snapshots:
 
   detect-libc@2.1.2: {}
 
-  dsh-annotation-core@https://codeload.github.com/linmu115/dsh-annotation-core/tar.gz/d7b0de917c7673d06dbd30790f7eed960ae82915:
+  dsh-annotation-core@https://codeload.github.com/linmu115/dsh-annotation-core/tar.gz/de5c6d3e4784cfcfa4cc90b4e8c29d75a36a2161:
+    dependencies:
+      zod: 4.4.3
+
+  dsh-obsidian-bridge-protocol@https://codeload.github.com/linmu115/dsh-obsidian-bridge-protocol/tar.gz/cfb069a5a09dacfb2e4f64a26036dfe514225132:
     dependencies:
       zod: 4.4.3
 
