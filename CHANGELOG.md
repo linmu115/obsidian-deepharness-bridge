@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.1 - 2026-09-04
+
+- Build the unchanged Obsidian companion against public Annotation Core commit
+  `d7b0de917c7673d06dbd30790f7eed960ae82915` and the suite-wide Zod 4.4.3
+  identity. The RC1 runtime still requires Core 0.3.7 to be installed first.
+- Preserve compact reference and sticker chips, immediate local deletion,
+  backlink unlink, surface-targeted one-shot navigation, and Bridge lifecycle
+  behavior.
+
+No Vault format, Bridge wire protocol, or DSH link behavior was changed.
+
 ## 0.6.0 - 2026-09-01
 
 - Resolve Obsidian-to-DSH navigation through the current controller lease before consulting static settings or launch logs.

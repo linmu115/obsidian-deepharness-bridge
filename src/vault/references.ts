@@ -105,13 +105,6 @@ export interface CommittedReferenceNavigationTarget {
   legacyAnchorId?: string;
 }
 
-type StableBacklinkCommit = BacklinkCommitV2 & {
-  readonly logicalSessionId?: string;
-  readonly logicalAnchorId?: string;
-  readonly legacySessionId?: string;
-  readonly legacyAnchorId?: string;
-};
-
 function parseV2Metadata(value: string): ReferenceMetadataV2 | null {
   let raw: unknown;
   try { raw = JSON.parse(value); }
@@ -287,7 +280,7 @@ export async function deleteCommittedReferenceBacklink(
 
 function renderV2Reference(
   capture: ObsidianReferenceCaptureV2,
-  commit: StableBacklinkCommit,
+  commit: BacklinkCommitV2,
   commitDigest: string,
   blockId: string,
 ): string {
@@ -331,7 +324,7 @@ function renderV2Reference(
 export async function commitReferenceBacklink(
   vault: ReferenceVaultProcessAdapter,
   capture: ObsidianReferenceCaptureV2,
-  commit: StableBacklinkCommit,
+  commit: BacklinkCommitV2,
   existingReceipt?: BacklinkReceiptV2,
   writtenAt = Date.now(),
 ): Promise<BacklinkReceiptV2> {
