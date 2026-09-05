@@ -40,6 +40,7 @@ import {
   type BacklinkCommitV2,
   type BacklinkReceiptV2,
   type ReferenceClaimV2,
+  type ObsidianReferenceCaptureV2,
   type ReferenceDiscardV2,
   type ReferenceDeleteCommitV2,
   type ReferenceRefreshRequestV2,
@@ -57,6 +58,7 @@ import {
   validateBridgePort,
 } from "../settings.ts";
 import { ClientActionQueue, type QueuedBridgeMessage } from "./queue.ts";
+import { KeyedSerialWork } from "../serial-work.ts";
 
 interface TokenRecord {
   clientId: string;
@@ -64,6 +66,7 @@ interface TokenRecord {
   surfaceId?: string;
   origin: string;
   expiresAt: number;
+  lastSeenAt?: number;
 }
 
 const LOCAL_HOST_CALLER = "local-host";
@@ -100,6 +103,9 @@ export interface RunningBridge {
   status(): BridgeStatus;
   activeDshViewerUrl(): string | undefined;
   enqueue(message: QueuedBridgeMessage): number;
+  cancelReference(referenceId: string): number;
+  restoreReferenceClaim(capture: ObsidianReferenceCaptureV2, claim: ReferenceClaimV2): void;
+  diagnostics(): { activeActions: number; completedActions: number; connectedClients: number };
   close(): Promise<void>;
 }
 
@@ -191,10 +197,6 @@ function bearerToken(request: IncomingMessage): string | null {
   return value?.startsWith("Bearer ") ? value.slice("Bearer ".length) : null;
 }
 
-function canonical(value: unknown): string {
-  return JSON.stringify(value);
-}
-
 export async function startBridgeServer(options: BridgeServerOptions = {}): Promise<RunningBridge> {
   const configuredOrigins = new Set((options.allowedDshOrigins ?? []).map(normalizeLoopbackOrigin));
   const port = validateBridgePort(options.port ?? DEFAULT_BRIDGE_PORT);
@@ -215,11 +217,12 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
   const queueId = randomBytes(16).toString("hex");
   const tokens = new Map<string, TokenRecord>();
   const leases = new Map<string, BridgeLease>();
-  const referenceClaims = new Map<string, ReferenceClaimV2>();
+  const referenceWork = new KeyedSerialWork();
   const inMemoryNotes = new Map<string, SessionNoteDocument>();
   let latestTokenExpiry: number | null = null;
   let listeningOrigin = "";
   let closed = false;
+  let closePromise: Promise<void> | undefined;
   let lifecycleState: Exclude<BridgeLifecycleState, "OFFLINE"> = "STARTING";
   let stateChangedAt = now();
   let inFlightRequestCount = 0;
@@ -488,6 +491,7 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
         throw new HttpError(503, "Bridge is draining and does not accept new work", "INVALID_STATE");
       }
       countedWorkRequest = true;
+      authentication.lastSeenAt = now();
       inFlightRequestCount += 1;
 
       if (request.method === "GET" && requestUrl.pathname === "/v1/actions/next") {
@@ -518,21 +522,14 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
       if (request.method === "POST" && v2AckMatch) {
         const actionId = decodeURIComponent(v2AckMatch[1] ?? "");
         const claim = ReferenceClaimV2Schema.parse(await readJsonBody(request, maxBodyBytes));
-        const message = queue.message(actionId);
-        if (message === undefined) throw new HttpError(404, "Action was not found");
-        if (message.type !== "reference-capture" || message.referenceId !== claim.referenceId) {
-          throw new HttpError(409, "Reference claim does not match the queued action");
-        }
-        const existing = referenceClaims.get(claim.referenceId);
-        if (existing !== undefined) {
-          if (canonical(existing) !== canonical(claim)) throw new HttpError(409, "Reference was already claimed by a different target");
-        } else {
-          await options.onClaimReference?.(claim);
-          referenceClaims.set(claim.referenceId, claim);
-        }
-        const result = queue.claim(actionId, claim);
-        if (result === "missing") throw new HttpError(404, "Action was not found");
-        if (result === "conflict") throw new HttpError(409, "Reference action was already claimed differently");
+        await referenceWork.run(claim.referenceId, async () => {
+          const result = queue.checkClaim(actionId, claim);
+          if (result === "missing" || result === "cancelled") throw new HttpError(404, "Reference action is no longer available", "NOTE_NOT_FOUND");
+          if (result === "conflict") throw new HttpError(409, "Reference action was already claimed differently", "IDEMPOTENCY_CONFLICT");
+          if (result === "created") await options.onClaimReference?.(claim);
+          const committed = queue.claim(actionId, claim);
+          if (committed === "cancelled" || committed === "missing") throw new HttpError(404, "Reference action was cancelled", "NOTE_NOT_FOUND");
+        });
         json(response, 200, { acknowledged: true, actionId, referenceId: claim.referenceId }, allowedOrigin);
         return;
       }
@@ -554,14 +551,17 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
         const referenceId = decodeURIComponent(discardMatch[1] ?? "");
         const input = ReferenceDiscardV2Schema.parse(await readJsonBody(request, maxBodyBytes));
         if (input.referenceId !== referenceId) throw new HttpError(400, "Reference ID does not match request path");
-        await options.onDiscardReference?.(input);
+        await referenceWork.run(referenceId, async () => {
+          await options.onDiscardReference?.(input);
+          queue.cancelReference(referenceId);
+        });
         json(response, 200, { discarded: true, referenceId }, allowedOrigin);
         return;
       }
 
       if (request.method === "POST" && requestUrl.pathname === "/v2/backlinks/commit") {
         const input = BacklinkCommitV2Schema.parse(await readJsonBody(request, maxBodyBytes));
-        const result = await options.onCommitBacklink?.(input);
+        const result = await referenceWork.run(input.referenceId, async () => options.onCommitBacklink?.(input));
         if (result === undefined) throw new HttpError(501, "Backlink commit is unavailable");
         json(response, 200, result, allowedOrigin);
         return;
@@ -573,7 +573,10 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
         const input = ReferenceDeleteCommitV2Schema.parse(await readJsonBody(request, maxBodyBytes));
         if (input.referenceId !== referenceId) throw new HttpError(400, "Reference ID does not match request path");
         if (options.onDeleteCommittedReference === undefined) throw new HttpError(501, "Reference deletion is unavailable");
-        await options.onDeleteCommittedReference(input);
+        await referenceWork.run(referenceId, async () => {
+          await options.onDeleteCommittedReference!(input);
+          queue.cancelReference(referenceId);
+        });
         json(response, 200, { deleted: true, referenceId }, allowedOrigin);
         return;
       }
@@ -682,29 +685,48 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
     identity,
     status: lifecycleStatus,
     activeDshViewerUrl,
+    cancelReference: (referenceId) => queue.cancelReference(referenceId),
+    restoreReferenceClaim: (capture, claim) => {
+      queue.enqueue(ObsidianReferenceCaptureV2Schema.parse(capture));
+      const result = queue.claim(capture.actionId, ReferenceClaimV2Schema.parse(claim));
+      if (result === "conflict") throw new HttpError(409, "Persisted reference claim conflicts", "IDEMPOTENCY_CONFLICT");
+    },
+    diagnostics: () => {
+      cleanupExpired();
+      return { ...queue.diagnostics, connectedClients: new Set([...tokens.values()]
+        .filter((token) => token.role === "surface" && token.lastSeenAt !== undefined && now() - token.lastSeenAt < 10_000)
+        .map((token) => token.clientId)).size };
+    },
     get tokenExpiresAt() {
       return latestTokenExpiry;
     },
     enqueue(message) {
+      if (closed) throw new HttpError(503, "Bridge is stopping", "INVALID_STATE");
       if (message.type === "reference-capture") return queue.enqueue(ObsidianReferenceCaptureV2Schema.parse(message));
       if (message.type === "reference-delete-request") {
         const deletion = ReferenceDeleteRequestV2Schema.parse(message);
-        queue.cancelReferenceDeepLinks(deletion.referenceId);
+        queue.cancelReference(deletion.referenceId);
         return queue.enqueue(deletion);
       }
       const legacy = parseBridgeMessage(message);
       if (legacy.type !== "deep-link") throw new TypeError("Only deep links, reference captures and reference deletions are queueable");
       return queue.enqueue(legacy as QueuedBridgeMessage);
     },
-    async close() {
-      if (closed) return;
+    close() {
+      if (closePromise) return closePromise;
       closed = true;
       setLifecycleState("DRAINING");
-      await waitForDrain(5_000);
-      setLifecycleState("DRAINED");
-      await new Promise<void>((resolve, reject) => {
-        server.close((error) => error ? reject(error) : resolve());
-      });
+      closePromise = (async () => {
+        await new Promise<void>((resolve, reject) => {
+          server.close((error) => error ? reject(error) : resolve());
+        });
+        // A disconnected client can leave its Vault callback running.
+        while (inFlightRequestCount > 0) await waitForDrain(5_000);
+        setLifecycleState("DRAINED");
+        tokens.clear();
+        leases.clear();
+      })();
+      return closePromise;
     },
   };
 }

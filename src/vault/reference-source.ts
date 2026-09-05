@@ -10,6 +10,28 @@ import {
 
 export interface ReferenceVaultReader {
   read(path: string): Promise<string | null>;
+  findMarkdownPaths?(kind: "reference" | "sticker" | "block", id: string): Promise<readonly string[]>;
+}
+
+export async function locateObsidianReference(
+  vault: ReferenceVaultReader,
+  capture: ObsidianReferenceCaptureV2,
+): Promise<{ notePath: string; markdown: string } | { reason: "note-missing" | "block-missing" | "ambiguous" }> {
+  const { notePath, blockId } = capture.source.locator;
+  const marker = () => new RegExp(`(?:^|\\s)\\^${escapeRegExp(blockId)}[ \\t]*(?=\\r?$)`, "gm");
+  const recorded = await vault.read(notePath);
+  const count = recorded === null ? 0 : [...recorded.matchAll(marker())].length;
+  if (count > 1) return { reason: "ambiguous" };
+  if (count === 1) return { notePath, markdown: recorded! };
+  let located: { notePath: string; markdown: string } | undefined;
+  for (const candidate of await (vault.findMarkdownPaths?.("block", blockId) ?? Promise.resolve([]))) {
+    if (candidate === notePath) continue;
+    const markdown = await vault.read(candidate);
+    const matches = markdown === null ? 0 : [...markdown.matchAll(marker())].length;
+    if (matches > 1 || (matches > 0 && located)) return { reason: "ambiguous" };
+    if (matches === 1) located = { notePath: candidate, markdown: markdown! };
+  }
+  return located ?? { reason: recorded === null ? "note-missing" : "block-missing" };
 }
 
 export interface CreateReferenceCaptureInput {
@@ -90,11 +112,11 @@ export async function refreshObsidianReference(
   capture: ObsidianReferenceCaptureV2,
   capturedAt = Date.now(),
 ): Promise<ReferenceRefreshResultV2> {
-  const source = await vault.read(capture.source.locator.notePath);
-  if (source === null) return { kind: "blocked", reason: "note-missing" };
-  const markdown = normalizeSourceText(source);
+  const located = await locateObsidianReference(vault, capture);
+  if ("reason" in located) return { kind: "blocked", reason: located.reason };
+  const markdown = normalizeSourceText(located.markdown);
   const nextHash = documentHash(markdown);
-  if (nextHash === capture.source.snapshot.documentHash) return { kind: "unchanged", source: capture.source };
+  if (nextHash === capture.source.snapshot.documentHash && located.notePath === capture.source.locator.notePath) return { kind: "unchanged", source: capture.source };
   const occurrence = occurrenceAtBlock(markdown, capture.source.selectedText, capture.source.locator.blockId);
   if (occurrence === undefined) {
     const marker = new RegExp(`(?:^|\\s)\\^${escapeRegExp(capture.source.locator.blockId)}\\s*$`, "m");
@@ -107,6 +129,7 @@ export async function refreshObsidianReference(
     kind: "refreshed",
     source: {
       ...capture.source,
+      locator: { ...capture.source.locator, notePath: located.notePath },
       snapshot: { markdown, documentHash: nextHash, capturedAt, freshness: "refreshed" },
     },
   };

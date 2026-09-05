@@ -31,6 +31,31 @@ function migrated(referenceId = "reference-1"): PendingReferenceRecord {
 }
 
 describe("pending reference settings rows", () => {
+  it("shows current queued and claimed work and hides synced history", () => {
+    const ready = migrated() as Extract<PendingReferenceRecord, { state: "migrated-ready" }>;
+    const records: PendingReferenceRecord[] = [
+      { state: "queued", capture: ready.capture, blockIdOwnership: "pre-existing" },
+      { state: "claimed", capture: { ...ready.capture, referenceId: "claimed" }, blockIdOwnership: "pre-existing", claim: { annotationProtocolVersion: 2, type: "reference-claim", referenceId: "claimed", profileId: "web", sessionId: "session", setId: "set" } },
+      { state: "claimed", capture: { ...ready.capture, referenceId: "synced" }, blockIdOwnership: "pre-existing", claim: { annotationProtocolVersion: 2, type: "reference-claim", referenceId: "synced", profileId: "web", sessionId: "session", setId: "set" } },
+    ];
+    const rows = buildPendingReferenceRows({
+      pendingReferences: records, releaseMigratedReference: vi.fn(), discardReference: vi.fn(), openReferenceNote: vi.fn(),
+      referenceStatus: (id) => id === "synced" ? "synced" : "pending",
+    });
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.description).toContain("等待 DSH 接收");
+    expect(rows[1]).toMatchObject({ canOpen: true, canDiscard: true });
+    expect(rows[1]?.description).toContain("等待随提问写回");
+  });
+
+  it("keeps deletion recovery visible without exposing destructive discard", () => {
+    const [row] = buildPendingReferenceRows({
+      pendingReferences: [migrated()], releaseMigratedReference: vi.fn(), discardReference: vi.fn(), openReferenceNote: vi.fn(),
+      referenceStatus: () => "deleting",
+    });
+    expect(row).toMatchObject({ canDiscard: false }); expect(row?.description).toContain("等待 DSH 确认");
+  });
+
   it("releases one migrated reference by its stable ID", async () => {
     const releaseMigratedReference = vi.fn(async () => undefined);
     const owner = {

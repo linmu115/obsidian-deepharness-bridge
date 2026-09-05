@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.6.2 - Unreleased
+
+- Save session stickers with revision checks inside `Vault.process`, and unlink
+  sticker backlinks against the latest note contents. Serialize first creation
+  and parent folders across adapters so competing saves cannot both succeed.
+- Cancel pending capture delivery and its navigation when a reference is
+  discarded; serialize competing claims, discard, and commits. Claimed but
+  unsent references remain discardable. Restore pending claims after restart.
+- Serialize plugin state changes and persistence, preserve durable deletion
+  checkpoints, order settings restarts, and make shutdown wait for in-flight
+  Vault callbacks before a newly enabled instance loads saved data.
+- Separate active queue entries from bounded compact completion receipts and
+  reuse invalidated Markdown/native-backlink indexes. Follow uniquely located
+  moved source notes and preserve explicit ambiguity errors.
+- Apply settings once after editing, show live connection and current pending
+  reference progress, and expose source opening, cancellation, and recovery retry.
+- Reuse the neutral Bridge Protocol `/data` schemas. Wire versions remain
+  annotation 2, sticker 1, and lifecycle 3; logical targets and surface-specific
+  one-shot navigation are preserved.
+
+Verification and retention details: [hardening notes](docs/changes/2026-09-05-consistency-and-recovery.md).
+
 ## 0.6.1 - 2026-09-04
 
 - Build the unchanged Obsidian companion against public Annotation Core commit

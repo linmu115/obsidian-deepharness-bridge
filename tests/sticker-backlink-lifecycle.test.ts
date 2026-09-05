@@ -15,6 +15,23 @@ const target = {
 };
 
 describe("sticker backlink lifecycle", () => {
+  it.each([false, true])("preserves edits between candidate read and atomic unlink (global=%s)", async (global) => {
+    const original = `before\n<!-- dsh-sticker-backlink:${JSON.stringify(target)} -->\nlink\n<!-- /dsh-sticker-backlink -->\nafter\n`;
+    let current = original;
+    const vault: StickerBacklinkVault = {
+      listMarkdownPaths: async () => ["synthetic.md"],
+      read: async () => {
+        const snapshot = current;
+        current += "USER EDIT DURING DELETE\n";
+        return snapshot;
+      },
+      process: async (_path, update) => { current = update(current); return current; },
+    };
+    const result = global ? await deleteStickerBacklinks(vault, target) : await deleteStickerBacklinkFromNote(vault, "synthetic.md", target);
+    expect(result).toEqual({ notesChanged: 1, linksRemoved: 1 });
+    expect(current).toBe("before\nafter\nUSER EDIT DURING DELETE\n");
+  });
+
   it("removes the same logical sticker relation after the DSH native session ID changes", () => {
     const metadata = JSON.stringify({
       ...target,
@@ -79,7 +96,7 @@ describe("sticker backlink lifecycle", () => {
     const vault: StickerBacklinkVault = {
       listMarkdownPaths: async () => [...files.keys()],
       read: async (path) => files.get(path) ?? null,
-      write: async (path, content) => { files.set(path, content); },
+      process: async (path, update) => { const content = update(files.get(path)!); files.set(path, content); return content; },
     };
 
     await expect(deleteStickerBacklinks(vault, target)).resolves.toEqual({ notesChanged: 1, linksRemoved: 1 });
@@ -97,7 +114,7 @@ describe("sticker backlink lifecycle", () => {
     const vault: StickerBacklinkVault = {
       listMarkdownPaths: async () => [...files.keys()],
       read: async (path) => files.get(path) ?? null,
-      write: async (path, content) => { files.set(path, content); },
+      process: async (path, update) => { const content = update(files.get(path)!); files.set(path, content); return content; },
     };
 
     await expect(deleteStickerBacklinkFromNote(vault, "selected.md", target))

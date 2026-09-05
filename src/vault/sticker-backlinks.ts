@@ -8,6 +8,7 @@ import { sessionNotePath } from "./session-notes.ts";
 
 export interface VaultBacklinkAdapter {
   listNativeBacklinks(notePath: string, blockId: string): Promise<readonly unknown[]>;
+  sessionNotePath?(sessionId: string): string;
 }
 
 export async function listStickerBacklinks(
@@ -16,7 +17,7 @@ export async function listStickerBacklinks(
 ): Promise<StickerBacklink[]> {
   const target = stickerBacklinkTargetSchema.parse(input);
   const blockId = `dsh-sticker-${target.stickerId.slice(0, 8)}`;
-  const backlinks = (await vault.listNativeBacklinks(sessionNotePath(target.sessionId), blockId))
+  const backlinks = (await vault.listNativeBacklinks(vault.sessionNotePath?.(target.sessionId) ?? sessionNotePath(target.sessionId), blockId))
     .map((value) => stickerBacklinkSchema.parse(value));
   const unique = new Map<string, StickerBacklink>();
 

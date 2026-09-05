@@ -71,7 +71,122 @@ const firstAction: DeepLinkAction = {
   quoteHash: "sha256:30101ebf",
 };
 
+function gate() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+function raceCapture() {
+  return createObsidianReferenceCapture({
+    actionId: "race-action", referenceId: "race-reference", vaultId: "synthetic-vault", notePath: "synthetic.md",
+    blockId: "race-block", occurrence: 0, selectedText: "quote", markdown: "quote ^race-block\n", capturedAt: 1,
+  });
+}
+
+const raceClaim = {
+  annotationProtocolVersion: 2, type: "reference-claim", referenceId: "race-reference",
+  profileId: "web", sessionId: "race-session", setId: "race-set",
+} as const;
+
 describe("loopback bridge server", () => {
+  it.each(["claim", "discard"])("serializes %s first against the other operation and never redelivers a discarded capture", async (first) => {
+    const started = gate(); const release = gate();
+    const calls: string[] = [];
+    const hold = async (operation: string) => {
+      calls.push(operation);
+      if (operation === first) { started.resolve(); await release.promise; }
+    };
+    const bridge = await start({ onClaimReference: () => hold("claim"), onDiscardReference: () => hold("discard") });
+    const capture = raceCapture();
+    bridge.enqueue(capture);
+    bridge.enqueue({ ...firstAction, referenceId: capture.referenceId });
+    const token = await handshakeV2(bridge);
+    const claim = () => request(bridge, `/v2/actions/${capture.actionId}/ack`, {
+      method: "POST", headers: authorized(token, { "content-type": "application/json" }), body: JSON.stringify(raceClaim),
+    });
+    const discard = () => request(bridge, `/v2/references/${capture.referenceId}/discard`, {
+      method: "POST", headers: authorized(token, { "content-type": "application/json" }),
+      body: JSON.stringify({ annotationProtocolVersion: 2, type: "reference-discard", referenceId: capture.referenceId }),
+    });
+    const firstResponse = first === "claim" ? claim() : discard();
+    await started.promise;
+    const secondResponse = first === "claim" ? discard() : claim();
+    await vi.waitFor(() => expect(bridge.status().inFlightRequestCount).toBe(2));
+    expect(calls).toEqual([first]);
+    release.resolve();
+    expect((await firstResponse).status).toBe(200);
+    expect((await secondResponse).status).toBe(first === "claim" ? 200 : 404);
+    expect((await discard()).status).toBe(200);
+    expect((await claim()).status).toBe(404);
+    bridge.enqueue(capture); // Retained cancellation receipt suppresses the same action.
+    bridge.enqueue({ ...firstAction, actionId: "e8eac4fb-dd55-43c7-97d4-3466955161ad", referenceId: capture.referenceId });
+    const secondToken = await handshakeV2(bridge, "reconnected-surface");
+    const page = await request(bridge, "/v2/actions/pending?after=0", { headers: authorized(secondToken) });
+    expect(await page.json()).toMatchObject({ actions: [] });
+  });
+
+  it("keeps a capture deliverable when durable discard fails", async () => {
+    const bridge = await start({ onDiscardReference: async () => { throw new Error("disk unavailable"); } });
+    bridge.enqueue(raceCapture());
+    const token = await handshakeV2(bridge);
+    const discarded = await request(bridge, "/v2/references/race-reference/discard", {
+      method: "POST", headers: authorized(token, { "content-type": "application/json" }),
+      body: JSON.stringify({ annotationProtocolVersion: 2, type: "reference-discard", referenceId: "race-reference" }),
+    });
+    expect(discarded.status).toBe(500);
+    const page = await request(bridge, "/v2/actions/pending?after=0", { headers: authorized(token) });
+    expect(await page.json()).toMatchObject({ actions: [{ message: raceCapture() }] });
+  });
+
+  it("allows only one competing target to persist a claim", async () => {
+    const started = gate(); const release = gate();
+    const onClaimReference = vi.fn(async () => { started.resolve(); await release.promise; });
+    const bridge = await start({ onClaimReference }); bridge.enqueue(raceCapture());
+    const token = await handshakeV2(bridge);
+    const post = (sessionId: string) => request(bridge, "/v2/actions/race-action/ack", {
+      method: "POST", headers: authorized(token, { "content-type": "application/json" }),
+      body: JSON.stringify({ ...raceClaim, sessionId }),
+    });
+    const first = post("winner"); await started.promise;
+    const second = post("loser");
+    await vi.waitFor(() => expect(bridge.status().inFlightRequestCount).toBe(2));
+    release.resolve();
+    expect((await first).status).toBe(200); expect((await second).status).toBe(409);
+    expect(onClaimReference).toHaveBeenCalledOnce();
+  });
+
+  it("restores a persisted pending claim for an identical retry after restart", async () => {
+    const onClaimReference = vi.fn(async () => undefined);
+    const bridge = await start({ onClaimReference });
+    bridge.restoreReferenceClaim(raceCapture(), raceClaim);
+    const token = await handshakeV2(bridge);
+    const claimed = await request(bridge, "/v2/actions/race-action/ack", {
+      method: "POST", headers: authorized(token, { "content-type": "application/json" }), body: JSON.stringify(raceClaim),
+    });
+    expect(claimed.status).toBe(200); expect(onClaimReference).not.toHaveBeenCalled();
+    const pending = await request(bridge, "/v2/actions/pending?after=0", { headers: authorized(token) });
+    expect(await pending.json()).toMatchObject({ actions: [] });
+  });
+
+  it("shares close completion and waits for a Vault callback even after its client disconnects", async () => {
+    const started = gate(); const release = gate();
+    const bridge = await start({ onReadSessionNote: async () => { started.resolve(); await release.promise; return null; } });
+    const token = await handshakeV2(bridge);
+    const controller = new AbortController();
+    const reading = request(bridge, "/v1/session-notes/race", { headers: authorized(token), signal: controller.signal })
+      .catch(() => undefined);
+    await started.promise; controller.abort(); await reading;
+    const first = bridge.close(); const second = bridge.close();
+    expect(second).toBe(first);
+    let finished = false; void first.then(() => { finished = true; });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(finished).toBe(false);
+    expect(() => bridge.enqueue(firstAction)).toThrow("stopping");
+    release.resolve(); await first;
+    expect(bridge.status().state).toBe("DRAINED");
+  });
+
   it("publishes boot identity, leases the controller, and gates work during drain", async () => {
     const bridge = await start({ instanceId: "vault-test", bridgeVersion: "0.4.0" });
     const initial = await request(bridge, "/control/v1/status", { headers: { origin: DSH_ORIGIN } });

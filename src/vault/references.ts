@@ -65,6 +65,7 @@ export interface ReferenceVaultProcessAdapter extends VaultTextAdapter {
 
 export interface ReferenceDeleteVaultAdapter extends ReferenceVaultProcessAdapter {
   listMarkdownPaths(): Promise<string[]>;
+  findMarkdownPaths?(kind: "reference" | "sticker" | "block", id: string): Promise<readonly string[]>;
 }
 
 export class ReferenceDocumentError extends Error {
@@ -186,7 +187,7 @@ export async function findCommittedReferenceNavigationTarget(
     }
   }
 
-  for (const notePath of await vault.listMarkdownPaths()) {
+  for (const notePath of await (vault.findMarkdownPaths?.("reference", referenceId) ?? vault.listMarkdownPaths())) {
     if (notePath === recordedNotePath) continue;
     const source = await vault.read(notePath);
     if (source === null) continue;
@@ -263,7 +264,8 @@ export async function deleteCommittedReferenceBacklink(
     }
   }
 
-  const orderedPaths = (await vault.listMarkdownPaths()).filter((path) => path !== recordedNotePath);
+  const orderedPaths = (await (vault.findMarkdownPaths?.("reference", commit.referenceId) ?? vault.listMarkdownPaths()))
+    .filter((path) => path !== recordedNotePath);
   let found: { path: string; metadata: ReferenceMetadataV2 } | undefined;
   for (const path of orderedPaths) {
     const source = await vault.read(path);

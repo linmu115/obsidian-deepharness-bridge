@@ -31,6 +31,24 @@ function capture(markdown = original) {
 }
 
 describe("Obsidian reference source snapshots", () => {
+  it("follows a uniquely indexed moved note without changing its stable block identity", async () => {
+    const moved = "Moved/source.md";
+    const reader: ReferenceVaultReader = {
+      read: async (notePath) => notePath === moved ? original : null,
+      findMarkdownPaths: async (kind, id) => {
+        expect([kind, id]).toEqual(["block", "generation-definition"]); return [moved];
+      },
+    };
+    expect(await refreshObsidianReference(reader, capture(), 200)).toMatchObject({ kind: "refreshed", source: { locator: { notePath: moved, blockId: "generation-definition" }, snapshot: { markdown: original } } });
+  });
+
+  it("refuses to guess among moved notes or duplicate block markers", async () => {
+    const reader: ReferenceVaultReader = { read: async (notePath) => notePath === path ? null : original, findMarkdownPaths: async () => ["a.md", "b.md"] };
+    expect(await refreshObsidianReference(reader, capture())).toEqual({ kind: "blocked", reason: "ambiguous" });
+    expect(await refreshObsidianReference(new MemoryReader(new Map([[path, original + original]])), capture()))
+      .toEqual({ kind: "blocked", reason: "ambiguous" });
+  });
+
   it("captures the complete Markdown and both content identities", () => {
     const value = capture();
     expect(value.source.snapshot).toEqual({

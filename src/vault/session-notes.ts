@@ -11,6 +11,12 @@ import {
 export interface VaultTextAdapter {
   read(path: string): Promise<string | null>;
   write(path: string, content: string): Promise<void>;
+  sessionNotePath?(sessionId: string): string;
+}
+
+export interface AtomicVaultTextAdapter extends VaultTextAdapter {
+  /** Existing notes use Vault.process; null is only passed for a serialized creation. */
+  update(path: string, update: (content: string | null) => string): Promise<string>;
 }
 
 interface ManagedStickerBlock {
@@ -150,7 +156,7 @@ function applyStickerChanges(parsed: ParsedSessionNote, desired: readonly Sticke
 }
 
 export async function readSessionNote(vault: VaultTextAdapter, sessionId: string): Promise<SessionNoteDocument> {
-  const source = await vault.read(sessionNotePath(sessionId));
+  const source = await vault.read(vault.sessionNotePath?.(sessionId) ?? sessionNotePath(sessionId));
   if (source === null) {
     return {
       protocolVersion: PROTOCOL_VERSION,
@@ -164,20 +170,20 @@ export async function readSessionNote(vault: VaultTextAdapter, sessionId: string
 }
 
 export async function saveSessionNote(
-  vault: VaultTextAdapter,
+  vault: AtomicVaultTextAdapter,
   value: SessionNoteDocument,
   expectedRevision: string,
 ): Promise<{ revision: string }> {
   const document = sessionNoteDocumentSchema.parse(value);
-  const path = sessionNotePath(document.sessionId);
-  const current = await vault.read(path) ?? "";
-  const actualRevision = contentRevision(current);
-  if (actualRevision !== expectedRevision) {
-    throw new VaultDocumentError("REVISION_CONFLICT", `Expected ${expectedRevision}, found ${actualRevision}`);
-  }
-  const initialSource = current.length === 0 ? `# DSH 会话 ${document.sessionId}\n` : current;
-  const parsed = parseSessionNote(initialSource, document.sessionId);
-  const output = applyStickerChanges(parsed, document.stickers);
-  if (output !== current) await vault.write(path, output);
+  const path = vault.sessionNotePath?.(document.sessionId) ?? sessionNotePath(document.sessionId);
+  const output = await vault.update(path, (source) => {
+    const current = source ?? "";
+    const actualRevision = contentRevision(current);
+    if (actualRevision !== expectedRevision) {
+      throw new VaultDocumentError("REVISION_CONFLICT", `Expected ${expectedRevision}, found ${actualRevision}`);
+    }
+    const initialSource = current.length === 0 ? `# DSH 会话 ${document.sessionId}\n` : current;
+    return applyStickerChanges(parseSessionNote(initialSource, document.sessionId), document.stickers);
+  });
   return { revision: contentRevision(output) };
 }

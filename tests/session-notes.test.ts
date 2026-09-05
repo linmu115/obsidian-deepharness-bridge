@@ -7,13 +7,25 @@ import {
   renderSessionNote,
   saveSessionNote,
   sessionNotePath,
-  type VaultTextAdapter,
+  type AtomicVaultTextAdapter,
 } from "../src/vault/session-notes.ts";
 import type { SessionNoteDocument, StickerRecord } from "../src/protocol.ts";
 
-class MemoryVault implements VaultTextAdapter {
+class MemoryVault implements AtomicVaultTextAdapter {
   readonly files = new Map<string, string>();
   writes = 0;
+  private tail: Promise<unknown> = Promise.resolve();
+
+  update(path: string, update: (content: string | null) => string): Promise<string> {
+    const result = this.tail.then(async () => {
+      const previous = this.files.get(path) ?? null;
+      const next = update(previous);
+      if (next !== previous) await this.write(path, next);
+      return next;
+    });
+    this.tail = result.catch(() => undefined);
+    return result;
+  }
 
   async read(path: string): Promise<string | null> {
     return this.files.get(path) ?? null;
@@ -52,6 +64,35 @@ function marker(value: StickerRecord): string {
 }
 
 describe("session companion Markdown", () => {
+  it.each(["# Original user heading\n", null])("allows only one simultaneous save for revision %s", async (source) => {
+    const vault = new MemoryVault();
+    const path = sessionNotePath(sticker.sessionId);
+    if (source !== null) vault.files.set(path, source);
+    const revision = contentRevision(source ?? "");
+    const document: SessionNoteDocument = { protocolVersion: 1, type: "session-note", sessionId: sticker.sessionId, revision, stickers: [sticker] };
+    const outcomes = await Promise.allSettled([
+      saveSessionNote(vault, document, revision),
+      saveSessionNote(vault, { ...document, stickers: [{ ...sticker, markdown: "concurrent writer" }] }, revision),
+    ]);
+    expect(outcomes.map((outcome) => outcome.status)).toEqual(["fulfilled", "rejected"]);
+    expect(outcomes[1]).toMatchObject({ reason: { code: "REVISION_CONFLICT" } });
+    expect(vault.writes).toBe(1);
+    expect(parseSessionNote(vault.files.get(path)!, sticker.sessionId).document.stickers[0]?.markdown).toBe(sticker.markdown);
+  });
+
+  it("checks a user edit inside the atomic callback rather than accepting a stale read", async () => {
+    const vault = new MemoryVault();
+    const path = sessionNotePath(sticker.sessionId);
+    const original = `user prose\n${marker(sticker)}\n`;
+    vault.files.set(path, original);
+    const document = await readSessionNote(vault, sticker.sessionId);
+    vault.files.set(path, original.replace("> 内容", "> manually edited"));
+    await expect(saveSessionNote(vault, { ...document, stickers: [] }, document.revision))
+      .rejects.toMatchObject({ code: "REVISION_CONFLICT" });
+    expect(vault.files.get(path)).toContain("manually edited");
+    expect(vault.writes).toBe(0);
+  });
+
   it("creates a readable companion note on the first sticker save", async () => {
     const vault = new MemoryVault();
     const document: SessionNoteDocument = {

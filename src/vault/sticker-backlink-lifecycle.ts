@@ -7,7 +7,8 @@ import {
 export interface StickerBacklinkVault {
   listMarkdownPaths(): Promise<readonly string[]>;
   read(path: string): Promise<string | null>;
-  write(path: string, content: string): Promise<void>;
+  process(path: string, update: (content: string) => string): Promise<string>;
+  findMarkdownPaths?(kind: "sticker" | "reference" | "block", id: string): Promise<readonly string[]>;
 }
 
 const MANAGED_BLOCK = /(?:^|(?<=\n))<!-- dsh-sticker-backlink:(\{[^\r\n]*\}) -->\r?\n[\s\S]*?\r?\n<!-- \/dsh-sticker-backlink -->(?:\r?\n|$)/g;
@@ -102,10 +103,13 @@ export async function deleteStickerBacklinkFromNote(
   if (source === null || !source.includes(target.stickerId)) {
     return { notesChanged: 0, linksRemoved: 0 };
   }
-  const next = removeStickerBacklinksFromMarkdown(source, target);
-  if (next.source === source) return { notesChanged: 0, linksRemoved: 0 };
-  await vault.write(notePath, next.source);
-  return { notesChanged: 1, linksRemoved: next.linksRemoved };
+  let linksRemoved = 0;
+  await vault.process(notePath, (latest) => {
+    const next = removeStickerBacklinksFromMarkdown(latest, target);
+    linksRemoved = next.linksRemoved;
+    return next.source;
+  });
+  return { notesChanged: linksRemoved > 0 ? 1 : 0, linksRemoved };
 }
 
 export async function deleteStickerBacklinks(
@@ -115,14 +119,11 @@ export async function deleteStickerBacklinks(
   const target = stickerBacklinkTargetSchema.parse(value);
   let notesChanged = 0;
   let linksRemoved = 0;
-  for (const path of await vault.listMarkdownPaths()) {
-    const source = await vault.read(path);
-    if (source === null || !source.includes(target.stickerId)) continue;
-    const next = removeStickerBacklinksFromMarkdown(source, target);
-    if (next.source === source) continue;
-    await vault.write(path, next.source);
-    notesChanged += 1;
-    linksRemoved += next.linksRemoved;
+  const paths = await (vault.findMarkdownPaths?.("sticker", target.stickerId) ?? vault.listMarkdownPaths());
+  for (const path of paths) {
+    const result = await deleteStickerBacklinkFromNote(vault, path, target);
+    notesChanged += result.notesChanged;
+    linksRemoved += result.linksRemoved;
   }
   return { notesChanged, linksRemoved };
 }

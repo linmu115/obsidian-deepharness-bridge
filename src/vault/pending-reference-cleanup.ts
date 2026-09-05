@@ -5,6 +5,7 @@ export interface PendingMarkerVault {
   read(path: string): Promise<string | null>;
   listMarkdownPaths(): Promise<string[]>;
   process(path: string, update: (content: string) => string): Promise<string>;
+  findMarkdownPaths?(kind: "reference" | "sticker" | "block", id: string): Promise<readonly string[]>;
 }
 
 export interface PendingMarkerCleanupResult {
@@ -40,7 +41,7 @@ async function locateMarkerPath(
 
   let locatedPath: string | null = null;
   let locatedCount = 0;
-  for (const path of await vault.listMarkdownPaths()) {
+  for (const path of await (vault.findMarkdownPaths?.("block", blockId) ?? vault.listMarkdownPaths())) {
     if (path === recordedPath) continue;
     const content = await vault.read(path);
     if (content === null) continue;

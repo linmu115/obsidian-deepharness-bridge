@@ -1,6 +1,7 @@
 import { editorLivePreviewField, MarkdownView, Menu, Notice, Plugin } from "obsidian";
 
 import { startBridgeServer, type RunningBridge } from "./bridge/server.ts";
+import { SerialWork } from "./serial-work.ts";
 import {
   OBSIDIAN_DEEPHARNESS_ACTION,
   buildObsidianDshLink,
@@ -53,7 +54,7 @@ import {
   type CommittedReferenceNavigationTarget,
 } from "./vault/references.ts";
 import { cleanupOwnedPendingMarker } from "./vault/pending-reference-cleanup.ts";
-import { refreshObsidianReference } from "./vault/reference-source.ts";
+import { locateObsidianReference, refreshObsidianReference } from "./vault/reference-source.ts";
 import { readSessionNote, saveSessionNote } from "./vault/session-notes.ts";
 import { listStickerBacklinks } from "./vault/sticker-backlinks.ts";
 import {
@@ -82,10 +83,21 @@ function captureOf(record: PendingReferenceRecord): ObsidianReferenceCaptureV2 |
   return record.state === "needs-reselect" ? undefined : record.capture;
 }
 
+// Keep the unload barrier on the host across Obsidian's module reloads.
+const SHUTDOWN_BARRIER = Symbol.for("deepharness-bridge.shutdown");
+type BridgeHost = { [SHUTDOWN_BARRIER]?: Promise<void> };
+
 export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSettingsOwner {
   settings: DeepHarnessBridgeSettings = { ...DEFAULT_SETTINGS };
   bridgeStatus = "未启动";
   private bridge: RunningBridge | null = null;
+  private readonly stateWork = new SerialWork();
+  private readonly lifecycleWork = new SerialWork();
+  private stopping = false;
+  private shutdownPromise: Promise<void> | undefined;
+  private adapter: ObsidianVaultAdapter | undefined;
+  private lastOperationError = "";
+  private persistedData: StoredPluginDataV2 | undefined;
   private data: StoredPluginDataV2 = {
     dataVersion: 2,
     vaultId: "uninitialized",
@@ -98,7 +110,13 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
   get pendingReferences(): readonly PendingReferenceRecord[] { return this.data.pendingReferences; }
 
   async onload(): Promise<void> {
+    this.register(() => {
+      void this.shutdown().catch((error: unknown) => console.error("[obsidian-deepharness-bridge] shutdown failed", error));
+    });
+    await (this.app as BridgeHost)[SHUTDOWN_BARRIER];
+    if (this.stopping) return;
     const raw = await this.loadData() as unknown;
+    if (this.stopping) return;
     const legacySettings = typeof raw === "object" && raw !== null && "settings" in raw
       ? (raw as { settings?: Partial<DeepHarnessBridgeSettings> }).settings
       : undefined;
@@ -111,6 +129,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
       createActionId: () => crypto.randomUUID(),
       now: Date.now,
     });
+    if (this.stopping) return;
     this.settings = {
       ...DEFAULT_SETTINGS,
       ...this.data.settings,
@@ -123,7 +142,8 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
       ),
     };
     this.data = { ...this.data, settings: this.settings };
-    await this.persist();
+    await this.mutate(() => this.persist());
+    if (this.stopping) return;
 
     const chipActions = {
       onOpen: (marker: string, chip: HTMLElement) => {
@@ -131,7 +151,11 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
           new Notice(error instanceof Error ? error.message : String(error));
         });
       },
-      onDelete: (marker: string) => { void this.deleteReferencesForMarker(marker); },
+      onDelete: (marker: string) => {
+        void this.deleteReferencesForMarker(marker).catch((error: unknown) => {
+          new Notice(error instanceof Error ? error.message : String(error));
+        });
+      },
     };
     const stickerChipActions = {
       onDelete: (target: Parameters<typeof deleteStickerBacklinkFromNote>[2]) => {
@@ -176,9 +200,20 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
         enqueue: (action) => this.bridge?.enqueue(action),
       }).catch((error: unknown) => new Notice(error instanceof Error ? error.message : String(error)));
     });
-    this.addSettingTab(new DeepHarnessSettingTab(this.app, this));
-    this.register(() => { void this.bridge?.close(); });
-    await this.startBridge();
+    const settingsTab = new DeepHarnessSettingTab(this.app, this);
+    this.addSettingTab(settingsTab);
+    this.register(() => settingsTab.hide());
+    const invalidate = (file: { path: string }) => this.adapter?.invalidate(file.path);
+    this.registerEvent(this.app.vault.on("create", invalidate));
+    this.registerEvent(this.app.vault.on("modify", invalidate));
+    this.registerEvent(this.app.vault.on("delete", invalidate));
+    this.registerEvent(this.app.vault.on("rename", (file, oldPath) => {
+      this.adapter?.invalidate(oldPath);
+      this.adapter?.invalidate(file.path);
+    }));
+    this.registerEvent(this.app.metadataCache.on("changed", () => this.adapter?.invalidateMetadata()));
+    this.registerEvent(this.app.metadataCache.on("resolved", () => this.adapter?.invalidateMetadata()));
+    await this.lifecycleWork.run(() => this.startBridge());
     this.app.workspace.onLayoutReady(() => {
       void this.provisionExistingViewerSurface().catch((error: unknown) => {
         console.warn("[obsidian-deepharness-bridge] Web Viewer surface provisioning failed", error);
@@ -187,10 +222,13 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
   }
 
   private async provisionExistingViewerSurface(): Promise<void> {
+    if (this.stopping) return;
+    const url = await this.resolveDshViewerUrl();
+    if (this.stopping) return;
     await provisionExistingDshWebViewer(
       this.app,
       dshViewerUrlForSurface(
-        await this.resolveDshViewerUrl(),
+        url,
         this.settings.webViewerSurfaceId,
       ),
     );
@@ -201,20 +239,75 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
   }
 
   async updateSettings(patch: Partial<DeepHarnessBridgeSettings>): Promise<void> {
-    const previousOrigin = this.settings.dshOrigin;
-    const previousPort = this.settings.bridgePort;
-    this.settings = { ...this.settings, ...patch };
-    this.settings.dshOrigin = normalizeLoopbackOrigin(this.settings.dshOrigin);
-    this.settings.bridgePort = validateBridgePort(this.settings.bridgePort);
-    await this.persist();
-    if (previousOrigin !== this.settings.dshOrigin || previousPort !== this.settings.bridgePort) {
-      await this.bridge?.close();
+    if (this.stopping) throw codedError("INVALID_STATE", "Bridge 正在关闭");
+    await this.lifecycleWork.run(async () => {
+      if (this.stopping) return;
+      let restart = false;
+      await this.mutate(async () => {
+        const previous = this.settings;
+        const next = { ...previous, ...patch };
+        next.dshOrigin = normalizeLoopbackOrigin(next.dshOrigin);
+        next.bridgePort = validateBridgePort(next.bridgePort);
+        next.companionDirectory = next.companionDirectory.trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+        if (!next.companionDirectory || next.companionDirectory.split("/").some((part) => part === ".." || part === ".")) {
+          throw new Error("伴生笔记目录必须是 Vault 内的有效目录");
+        }
+        restart = previous.dshOrigin !== next.dshOrigin || previous.bridgePort !== next.bridgePort
+          || previous.companionDirectory !== next.companionDirectory;
+        this.settings = next;
+        await this.persist();
+      });
+      if (restart && !this.stopping) {
+        const old = this.bridge;
+        this.bridge = null;
+        this.bridgeStatus = "正在应用连接设置";
+        await old?.close();
+        this.adapter = undefined;
+        if (!this.stopping) await this.startBridge();
+      }
+    });
+  }
+
+  shutdown(): Promise<void> {
+    if (this.shutdownPromise) return this.shutdownPromise;
+    this.stopping = true;
+    this.bridgeStatus = "正在关闭";
+    this.shutdownPromise = this.lifecycleWork.run(async () => {
+      const bridge = this.bridge;
       this.bridge = null;
-      await this.startBridge();
-    }
+      await bridge?.close();
+      await this.stateWork.drain();
+      this.bridgeStatus = "已关闭";
+    });
+    (this.app as BridgeHost)[SHUTDOWN_BARRIER] = this.shutdownPromise;
+    return this.shutdownPromise;
+  }
+
+  private mutate<T>(operation: () => Promise<T>): Promise<T> {
+    if (this.stopping) return Promise.reject(codedError("INVALID_STATE", "Bridge 正在关闭"));
+    return this.stateWork.run(async () => {
+      const before = this.data;
+      const previousSettings = this.settings;
+      try {
+        const result = await operation();
+        this.lastOperationError = "";
+        return result;
+      } catch (error) {
+        // Retry from the last acknowledged state. Note writes are idempotent;
+        // the durable deletion outbox is persisted before any marker cleanup.
+        this.data = this.persistedData ?? before;
+        this.settings = this.persistedData?.settings ?? previousSettings;
+        this.lastOperationError = error instanceof Error ? error.message : String(error);
+        throw error;
+      }
+    });
   }
 
   async releaseMigratedReference(referenceId: string): Promise<void> {
+    return this.mutate(() => this.releaseMigratedReferenceNow(referenceId));
+  }
+
+  private async releaseMigratedReferenceNow(referenceId: string): Promise<void> {
     const released = releaseMigratedRecord(this.data, referenceId);
     if (!released.changed || released.capture === undefined) return;
     this.data = released.data;
@@ -223,8 +316,22 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
   }
 
   async discardReference(referenceId: string): Promise<void> {
+    return this.mutate(() => this.discardReferenceNow(referenceId));
+  }
+
+  private async discardReferenceNow(referenceId: string): Promise<void> {
+    if (this.data.backlinkReceipts.some((receipt) => receipt.referenceId === referenceId)
+      || this.data.referenceDeleteRequests.some((request) => request.referenceId === referenceId)) {
+      throw codedError("IDEMPOTENCY_CONFLICT", "引用已提交或正在删除，请通过删除同步处理");
+    }
     const discarded = discardPendingReference(this.data, referenceId);
-    if (!discarded.changed) return;
+    if (!discarded.changed) { this.bridge?.cancelReference(referenceId); return; }
+    if (discarded.record?.state === "claimed"
+      && await findCommittedReferenceNavigationTarget(this.vaultAdapter(), referenceId, discarded.record.capture.source.locator.notePath)) {
+      // A note write can finish before its receipt save fails. Do not turn that
+      // recoverable commit into an orphan by treating it as an unsent discard.
+      throw codedError("IDEMPOTENCY_CONFLICT", "笔记已有此引用的回链，请通过删除同步处理");
+    }
     if (discarded.record !== undefined && discarded.record.state !== "needs-reselect") {
       await cleanupOwnedPendingMarker(
         this.vaultAdapter(),
@@ -238,11 +345,17 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
       referenceDeleteRequests: discarded.data.referenceDeleteRequests.filter((request) => request.referenceId !== referenceId),
     };
     await this.persist();
+    this.bridge?.cancelReference(referenceId);
   }
 
   async openReferenceNote(record: PendingReferenceRecord): Promise<void> {
     const capture = captureOf(record);
-    const notePath = capture?.source.locator.notePath ?? ("legacy" in record && "notePath" in record.legacy ? record.legacy.notePath : undefined);
+    let notePath = capture?.source.locator.notePath ?? ("legacy" in record && "notePath" in record.legacy ? record.legacy.notePath : undefined);
+    if (capture) {
+      const located = await locateObsidianReference(this.vaultAdapter(), capture);
+      if (!("reason" in located)) notePath = located.notePath;
+      else if (located.reason === "ambiguous") throw new Error("原文定位标识出现多次，请重新选择原文");
+    }
     if (!notePath) return;
     await openNoteInMainMarkdownLeaf(new ObsidianMainMarkdownWorkspace(this.app), {
       protocolVersion: 1,
@@ -256,13 +369,58 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
   private async persist(): Promise<void> {
     this.data = { ...this.data, settings: this.settings };
     await this.saveData(this.data);
+    this.persistedData = this.data;
+  }
+
+  connectionSummary(): string {
+    if (!this.bridge) return this.bridgeStatus;
+    const status = this.bridge.status();
+    if (status.state === "DRAINING" || status.state === "DRAINED") return "连接正在关闭，已接收的操作仍会完成";
+    const queued = this.data.pendingReferences.filter((record) => record.state === "queued").length;
+    const connected = status.activeLeaseCount > 0 || this.bridge.diagnostics().connectedClients > 0;
+    return `${connected ? "DSH 连接可用" : "等待 DSH 连接"} · ${queued} 条等待接收 · ${status.inFlightRequestCount} 项处理中`;
+  }
+
+  recoverySummary(): string {
+    const synced = this.data.backlinkReceipts.length;
+    const syncedIds = new Set(this.data.backlinkReceipts.map((receipt) => receipt.referenceId));
+    const waiting = this.data.pendingReferences.filter((record) => record.state === "claimed"
+      && !syncedIds.has(record.capture.referenceId)).length;
+    return `${waiting} 条等待随提问写回 · ${synced} 条已同步 · ${this.data.referenceDeleteRequests.length} 条删除等待确认`
+      + (this.lastOperationError ? `。需要处理：${this.lastOperationError}` : "");
+  }
+
+  referenceStatus(referenceId: string): "synced" | "deleting" | "pending" {
+    if (this.data.referenceDeleteRequests.some((request) => request.referenceId === referenceId)) return "deleting";
+    return this.data.backlinkReceipts.some((receipt) => receipt.referenceId === referenceId) ? "synced" : "pending";
+  }
+
+  async retryPendingWork(): Promise<void> {
+    if (!this.bridge) {
+      await this.lifecycleWork.run(() => this.startBridge());
+      return;
+    }
+    await this.mutate(async () => {
+      this.adapter?.invalidate();
+      for (const record of this.data.pendingReferences) {
+        if (record.state === "queued") this.bridge?.enqueue(record.capture);
+      }
+      for (const request of this.data.referenceDeleteRequests) {
+        await this.cleanupLocalReferenceDeletion(localDeleteCommit(request));
+        this.bridge?.enqueue(request);
+      }
+    });
   }
 
   private vaultAdapter(): ObsidianVaultAdapter {
-    return new ObsidianVaultAdapter(this.app, this.settings.companionDirectory);
+    return this.adapter ??= new ObsidianVaultAdapter(this.app, this.settings.companionDirectory);
   }
 
   private async queueReference(selection: NoteSelection): Promise<void> {
+    return this.mutate(() => this.queueReferenceNow(selection));
+  }
+
+  private async queueReferenceNow(selection: NoteSelection): Promise<void> {
     await ensureDshWebViewer(
       this.app,
       dshViewerUrlForSurface(await this.resolveDshViewerUrl(), this.settings.webViewerSurfaceId),
@@ -300,6 +458,10 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
   }
 
   private async claimReference(claim: ReferenceClaimV2): Promise<void> {
+    return this.mutate(() => this.claimReferenceNow(claim));
+  }
+
+  private async claimReferenceNow(claim: ReferenceClaimV2): Promise<void> {
     const { index, record } = this.findCapture(claim.referenceId);
     if (record.state === "migrated-ready") throw codedError("IDEMPOTENCY_CONFLICT", "Migrated reference has not been released");
     if (record.state === "claimed") {
@@ -321,6 +483,10 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
   }
 
   private async refreshReference(request: ReferenceRefreshRequestV2): Promise<ReferenceRefreshResultV2> {
+    return this.mutate(() => this.refreshReferenceNow(request));
+  }
+
+  private async refreshReferenceNow(request: ReferenceRefreshRequestV2): Promise<ReferenceRefreshResultV2> {
     const { index, record } = this.findCapture(request.referenceId);
     if (record.capture.source.snapshot.documentHash !== request.knownDocumentHash) {
       throw codedError("SOURCE_CHANGED", "DSH requested refresh from an unknown snapshot");
@@ -354,6 +520,10 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
   }
 
   private async commitBacklink(commit: BacklinkCommitV2) {
+    return this.mutate(() => this.commitBacklinkNow(commit));
+  }
+
+  private async commitBacklinkNow(commit: BacklinkCommitV2) {
     const { record } = this.findCapture(commit.referenceId);
     const existing = this.data.backlinkReceipts.find((receipt) => receipt.referenceId === commit.referenceId);
     const claim = record.state === "claimed" ? record.claim : undefined;
@@ -399,8 +569,11 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
     }
 
     const receipt = this.data.backlinkReceipts.find((candidate) => candidate.referenceId === referenceId);
+    const recordedPath = receipt?.notePath ?? (record?.state !== "needs-reselect" ? record?.capture.source.locator.notePath : undefined);
+    // Retry discovery even without a receipt: a prior note write/cleanup may
+    // have completed before its corresponding state save failed.
+    await deleteCommittedReferenceBacklink(this.vaultAdapter(), commit, recordedPath);
     if (receipt === undefined) return;
-    await deleteCommittedReferenceBacklink(this.vaultAdapter(), commit, receipt.notePath);
     this.data = {
       ...this.data,
       backlinkReceipts: this.data.backlinkReceipts.filter((candidate) => candidate.referenceId !== referenceId),
@@ -512,6 +685,10 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
   }
 
   private async deleteReferencesForMarker(rawMarker: string): Promise<void> {
+    return this.mutate(() => this.deleteReferencesForMarkerNow(rawMarker));
+  }
+
+  private async deleteReferencesForMarkerNow(rawMarker: string): Promise<void> {
     const blockId = rawMarker.replace(/^\^/, "");
     const records = this.data.pendingReferences.filter((record): record is Exclude<PendingReferenceRecord, { state: "needs-reselect" }> => (
       record.state !== "needs-reselect" && record.capture.source.locator.blockId === blockId
@@ -544,7 +721,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
 
     for (const record of records.filter((candidate) => candidate.state !== "claimed")) {
       try {
-        await this.discardReference(record.capture.referenceId);
+        await this.discardReferenceNow(record.capture.referenceId);
       } catch (error) {
         console.warn("[obsidian-deepharness-bridge] pending reference cleanup failed", error);
       }
@@ -562,15 +739,21 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
   }
 
   private async deleteCommittedReference(commit: ReferenceDeleteCommitV2): Promise<void> {
+    return this.mutate(() => this.deleteCommittedReferenceNow(commit));
+  }
+
+  private async deleteCommittedReferenceNow(commit: ReferenceDeleteCommitV2): Promise<void> {
     await this.cleanupLocalReferenceDeletion(commit);
     this.data = acknowledgeReferenceDelete(this.data, commit.referenceId);
     await this.persist();
   }
 
   private async startBridge(): Promise<void> {
+    if (this.stopping) return;
     const vault = this.vaultAdapter();
+    let startedBridge: RunningBridge | undefined;
     try {
-      this.bridge = await startBridgeServer({
+      const bridge = await startBridgeServer({
         port: this.settings.bridgePort,
         allowedDshOrigins: [this.settings.dshOrigin],
         instanceId: this.data.vaultId,
@@ -588,19 +771,28 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
         onReadSessionNote: (sessionId) => readSessionNote(vault, sessionId),
         onSaveSessionNote: ({ document, expectedRevision }) => saveSessionNote(vault, document, expectedRevision),
       });
-      for (const record of this.data.pendingReferences) {
-        if (record.state === "queued") this.bridge.enqueue(record.capture);
-      }
-      for (const request of this.data.referenceDeleteRequests) {
-        try {
-          await this.cleanupLocalReferenceDeletion(localDeleteCommit(request));
-        } catch (error) {
-          console.warn("[obsidian-deepharness-bridge] persisted local reference deletion will retry", error);
+      startedBridge = bridge;
+      if (this.stopping) { await bridge.close(); return; }
+      this.bridge = bridge;
+      await this.mutate(async () => {
+        for (const record of this.data.pendingReferences) {
+          if (record.state === "queued") bridge.enqueue(record.capture);
+          if (record.state === "claimed") bridge.restoreReferenceClaim(record.capture, record.claim);
         }
-        this.bridge.enqueue(request as ReferenceDeleteRequestV2);
-      }
-      this.bridgeStatus = `已连接 ${this.bridge.origin}`;
+        for (const request of this.data.referenceDeleteRequests) {
+          try {
+            await this.cleanupLocalReferenceDeletion(localDeleteCommit(request));
+          } catch (error) {
+            console.warn("[obsidian-deepharness-bridge] persisted local reference deletion will retry", error);
+          }
+          bridge.enqueue(request as ReferenceDeleteRequestV2);
+        }
+      });
+      this.bridgeStatus = `等待 DSH 连接 · ${bridge.origin}`;
     } catch (error) {
+      if (this.bridge === startedBridge) this.bridge = null;
+      await startedBridge?.close();
+      if (this.stopping) return;
       const message = error instanceof Error ? error.message : String(error);
       this.bridgeStatus = `启动失败：${message}`;
       new Notice(this.bridgeStatus);

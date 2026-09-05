@@ -18,6 +18,7 @@ export interface NativeBacklinkSource {
 
 export interface NativeBacklinkIndex {
   resolvedLinks: Readonly<Record<string, Readonly<Record<string, number>>>>;
+  sourcePaths?: readonly string[];
   getSource(path: string): NativeBacklinkSource | null;
   getCache(source: NativeBacklinkSource): NativeBacklinkCache | null;
   parseLinktext(value: string): { path: string; subpath: string };
@@ -53,8 +54,8 @@ export async function collectNativeBacklinks(
 ): Promise<StickerBacklink[]> {
   const backlinks: StickerBacklink[] = [];
 
-  for (const [sourcePath, destinations] of Object.entries(index.resolvedLinks)) {
-    if (!destinations[targetPath]) continue;
+  const paths = index.sourcePaths ?? Object.keys(index.resolvedLinks).filter((path) => index.resolvedLinks[path]?.[targetPath]);
+  for (const sourcePath of paths) {
     const source = index.getSource(sourcePath);
     if (!source) continue;
     const cache = index.getCache(source);
