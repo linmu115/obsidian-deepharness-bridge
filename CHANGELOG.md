@@ -2,6 +2,9 @@
 
 ## 0.6.2 - Unreleased
 
+- Bundle shared protocol subpaths into the standalone Obsidian entry. Check all
+  runtime package imports and evaluate the compiled CommonJS entry without
+  development dependency resolution to catch plugin-load failures before install.
 - Save session stickers with revision checks inside `Vault.process`, and unlink
   sticker backlinks against the latest note contents. Serialize first creation
   and parent folders across adapters so competing saves cannot both succeed.
