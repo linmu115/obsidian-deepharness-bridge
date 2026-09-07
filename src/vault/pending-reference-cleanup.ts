@@ -35,9 +35,11 @@ async function locateMarkerPath(
   vault: PendingMarkerVault,
   recordedPath: string,
   blockId: string,
+  allowMovedNote: boolean,
 ): Promise<string | null> {
   const recordedContent = await vault.read(recordedPath);
   if (recordedContent !== null && markerCount(recordedContent, blockId) > 0) return recordedPath;
+  if (!allowMovedNote) return null;
 
   let locatedPath: string | null = null;
   let locatedCount = 0;
@@ -59,6 +61,7 @@ export async function cleanupOwnedPendingMarker(
   target: CapturedRecord,
   pendingReferences: readonly PendingReferenceRecord[],
   backlinkReceipts: readonly BacklinkReceiptV2[],
+  options: { allowMovedNote?: boolean } = {},
 ): Promise<PendingMarkerCleanupResult> {
   if (target.blockIdOwnership !== "plugin-created") {
     return { markerRemoved: false, reason: "not-owned" };
@@ -67,12 +70,12 @@ export async function cleanupOwnedPendingMarker(
   const sharedPending = pendingReferences.some((record) => {
     if (record === target) return false;
     const capture = captureOf(record);
-    return capture?.source.locator.blockId === blockId;
+    return capture?.source.locator.blockId === blockId && capture.source.locator.notePath === notePath;
   });
-  const sharedBacklink = backlinkReceipts.some((receipt) => receipt.blockId === blockId);
+  const sharedBacklink = backlinkReceipts.some((receipt) => receipt.blockId === blockId && receipt.notePath === notePath);
   if (sharedPending || sharedBacklink) return { markerRemoved: false, reason: "still-referenced" };
 
-  const markerPath = await locateMarkerPath(vault, notePath, blockId);
+  const markerPath = await locateMarkerPath(vault, notePath, blockId, options.allowMovedNote !== false);
   if (markerPath === null) return { markerRemoved: false, reason: "already-absent" };
 
   let removed = false;

@@ -97,6 +97,8 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
   private shutdownPromise: Promise<void> | undefined;
   private adapter: ObsidianVaultAdapter | undefined;
   private lastOperationError = "";
+  private viewerOperation: Promise<void> | undefined;
+  private readonly pendingSelections = new Map<string, Set<NoteSelection>>();
   private persistedData: StoredPluginDataV2 | undefined;
   private data: StoredPluginDataV2 = {
     dataVersion: 2,
@@ -173,12 +175,14 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
     });
 
     const captureOptions = () => ({ vaultId: this.data.vaultId });
-    registerEditorSelectionMenu(this, (selection) => this.queueReference(selection), captureOptions);
+    const captureError = (error: unknown) => new Notice(`引用未能保存：${error instanceof Error ? error.message : String(error)}。请重新选择原文后重试。`);
+    registerEditorSelectionMenu(this, (selection) => this.queueReference(selection), captureOptions, captureError);
     registerReadingSelectionMenu(this, {
       markdownViewType: MarkdownView,
       menuForEvent: (event) => Menu.forEvent(event),
       captureOptions,
       onCitation: (selection) => this.queueReference(selection),
+      onError: captureError,
     });
     registerDshLinkInterceptor(this, {
       app: this.app,
@@ -336,7 +340,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
       await cleanupOwnedPendingMarker(
         this.vaultAdapter(),
         discarded.record,
-        discarded.data.pendingReferences,
+        this.markerReferences(discarded.data.pendingReferences, referenceId),
         discarded.data.backlinkReceipts,
       );
     }
@@ -398,6 +402,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
   async retryPendingWork(): Promise<void> {
     if (!this.bridge) {
       await this.lifecycleWork.run(() => this.startBridge());
+      this.openViewerForPendingReferences();
       return;
     }
     await this.mutate(async () => {
@@ -410,6 +415,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
         this.bridge?.enqueue(request);
       }
     });
+    this.openViewerForPendingReferences();
   }
 
   private vaultAdapter(): ObsidianVaultAdapter {
@@ -417,17 +423,99 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
   }
 
   private async queueReference(selection: NoteSelection): Promise<void> {
-    return this.mutate(() => this.queueReferenceNow(selection));
+    const reserved = this.reserveSelectionMarker(selection);
+    const rejectCapture = this.stopping;
+    const operation = async () => {
+      try {
+        if (rejectCapture) {
+          await this.rollbackSelectionMarker(reserved);
+          throw codedError("INVALID_STATE", "Bridge 正在关闭");
+        }
+        await this.queueReferenceNow(reserved);
+      } finally {
+        const key = this.selectionMarkerKey(reserved);
+        const reservations = this.pendingSelections.get(key)!;
+        reservations.delete(reserved);
+        if (reservations.size === 0) this.pendingSelections.delete(key);
+      }
+    };
+    if (rejectCapture) await this.stateWork.run(operation);
+    else await this.mutate(operation);
+    this.openViewerForPendingReferences();
+  }
+
+  private selectionMarkerKey(selection: NoteSelection): string {
+    return JSON.stringify([selection.source.locator.notePath, selection.source.locator.blockId]);
+  }
+
+  private markerReferences(records: readonly PendingReferenceRecord[], excludingReferenceId: string): readonly PendingReferenceRecord[] {
+    return [...records, ...[...this.pendingSelections.values()].flatMap((reservations) => [...reservations]
+      .filter((selection) => selection.referenceId !== excludingReferenceId)
+      .map((selection): PendingReferenceRecord => ({ state: "queued", capture: selection, blockIdOwnership: selection.blockIdOwnership })))];
+  }
+
+  private reserveSelectionMarker(selection: NoteSelection): NoteSelection {
+    const key = this.selectionMarkerKey(selection);
+    const reservations = this.pendingSelections.get(key) ?? new Set<NoteSelection>();
+    const reserved = { ...selection };
+    reservations.add(reserved);
+    this.pendingSelections.set(key, reservations);
+    const owner = [...reservations].find((capture) => capture.blockIdOwnership === "plugin-created");
+    const persistedOwner = this.data.pendingReferences.some((record) => record.state !== "needs-reselect"
+      && record.blockIdOwnership === "plugin-created"
+      && record.capture.source.locator.notePath === selection.source.locator.notePath
+      && record.capture.source.locator.blockId === selection.source.locator.blockId);
+    if (owner || persistedOwner) {
+      // Ownership belongs to this note marker, not to the first reference that
+      // happened to create it. Keep it through queued captures and failed saves.
+      for (const capture of reservations) {
+        capture.blockIdOwnership = "plugin-created";
+        if (capture.rollbackBlockId === undefined && owner?.rollbackBlockId) capture.rollbackBlockId = owner.rollbackBlockId;
+      }
+    }
+    return reserved;
+  }
+
+  private async rollbackSelectionMarker(selection: NoteSelection): Promise<void> {
+    if ((this.pendingSelections.get(this.selectionMarkerKey(selection))?.size ?? 0) > 1) return;
+    const { notePath, blockId } = selection.source.locator;
+    const shared = this.data.pendingReferences.some((record) => captureOf(record)?.source.locator.blockId === blockId
+      && captureOf(record)?.source.locator.notePath === notePath)
+      || this.data.backlinkReceipts.some((receipt) => receipt.blockId === blockId && receipt.notePath === notePath);
+    if (selection.blockIdOwnership === "plugin-created" && !shared) selection.rollbackBlockId?.();
+    await cleanupOwnedPendingMarker(this.vaultAdapter(), { state: "queued", capture: selection, blockIdOwnership: selection.blockIdOwnership }, this.data.pendingReferences, this.data.backlinkReceipts, { allowMovedNote: false });
+  }
+
+  private enqueueSavedCapture(capture: ObsidianReferenceCaptureV2): void {
+    try { this.bridge?.enqueue(capture); }
+    catch (error) {
+      new Notice(`引用已保存，暂时无法投递：${error instanceof Error ? error.message : String(error)}。可在 Bridge 设置中重试。`);
+    }
+  }
+
+  private openViewerForPendingReferences(): void {
+    const hasQueued = () => !this.stopping && this.data.pendingReferences.some((record) => record.state === "queued");
+    if (this.viewerOperation || !hasQueued()) return;
+    // Navigation is an optional wake-up for an already durable outbox. Never
+    // hold the state lock while a Web Viewer waits for a stopped DSH server.
+    this.viewerOperation = (async () => {
+      try {
+        const url = await this.resolveDshViewerUrl();
+        if (!hasQueued()) return;
+        await ensureDshWebViewer(this.app, dshViewerUrlForSurface(url, this.settings.webViewerSurfaceId));
+      } catch (error) {
+        if (hasQueued()) {
+          new Notice(`引用已保存在待接收队列；打开 DSH 失败：${error instanceof Error ? error.message : String(error)}。连接恢复后可在 Bridge 设置中重试。`);
+        }
+      } finally { this.viewerOperation = undefined; }
+    })();
   }
 
   private async queueReferenceNow(selection: NoteSelection): Promise<void> {
-    await ensureDshWebViewer(
-      this.app,
-      dshViewerUrlForSurface(await this.resolveDshViewerUrl(), this.settings.webViewerSurfaceId),
-    );
     const {
       requiresBlockIdWrite: _requiresBlockIdWrite,
       blockIdOwnership,
+      rollbackBlockId: _rollbackBlockId,
       ...rawCapture
     } = selection;
     const capture = ObsidianReferenceCaptureV2Schema.parse(rawCapture);
@@ -436,16 +524,27 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
       if (canonicalSha256(captureOf(existing)) !== canonicalSha256(capture)) {
         throw codedError("IDEMPOTENCY_CONFLICT", `Reference ID already exists: ${capture.referenceId}`);
       }
-      if (existing.state === "queued") this.bridge?.enqueue(capture);
+      if (existing.state === "queued") this.enqueueSavedCapture(capture);
       return;
     }
+    const before = this.data;
     this.data = {
       ...this.data,
       pendingReferences: [...this.data.pendingReferences, { state: "queued", capture, blockIdOwnership }],
     };
-    await this.persist();
-    this.bridge?.enqueue(capture);
-    new Notice("引用已提交，等待 DSH 接收");
+    try {
+      await this.persist();
+    } catch (error) {
+      this.data = before;
+      try {
+        await this.rollbackSelectionMarker(selection);
+      } catch (cleanupError) {
+        throw new Error(`引用未能保存：${error instanceof Error ? error.message : String(error)}；定位标记清理失败：${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`);
+      }
+      throw error;
+    }
+    this.enqueueSavedCapture(capture);
+    new Notice("引用已保存，等待 DSH 接收");
   }
 
   private findCapture(referenceId: string): { index: number; record: Exclude<PendingReferenceRecord, { state: "needs-reselect" }> } {
@@ -557,7 +656,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
           : candidate.capture.referenceId !== referenceId
       ));
       const backlinkReceipts = this.data.backlinkReceipts.filter((receipt) => receipt.referenceId !== referenceId);
-      await cleanupOwnedPendingMarker(this.vaultAdapter(), record, pendingReferences, backlinkReceipts);
+      await cleanupOwnedPendingMarker(this.vaultAdapter(), record, this.markerReferences(pendingReferences, referenceId), backlinkReceipts);
       this.data = { ...this.data, pendingReferences };
       await this.persist();
     } else if (record !== undefined) {
@@ -743,6 +842,35 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
   }
 
   private async deleteCommittedReferenceNow(commit: ReferenceDeleteCommitV2): Promise<void> {
+    const record = this.data.pendingReferences.find((candidate) => captureOf(candidate)?.referenceId === commit.referenceId);
+    const request = this.data.referenceDeleteRequests.find((candidate) => candidate.referenceId === commit.referenceId);
+    const receipt = this.data.backlinkReceipts.find((candidate) => candidate.referenceId === commit.referenceId);
+    if (record === undefined && request === undefined && receipt === undefined) {
+      // Old versions could clear local state before deleting the note block.
+      // Its embedded metadata remains authoritative for safe orphan recovery.
+      await deleteCommittedReferenceBacklink(this.vaultAdapter(), commit);
+      return;
+    }
+    const identities = [record?.state === "claimed" ? record.claim : undefined, request].filter((identity) => identity !== undefined);
+    if (record !== undefined && record.state !== "claimed" && request === undefined) {
+      throw codedError("IDEMPOTENCY_CONFLICT", "引用尚未登记 DSH 会话，不能确认删除");
+    }
+    for (const identity of identities) {
+      if (identity.referenceId !== commit.referenceId || identity.profileId !== commit.profileId
+        || identity.sessionId !== commit.sessionId || identity.setId !== commit.setId) {
+        throw codedError("IDEMPOTENCY_CONFLICT", "删除确认与已登记的 DSH 引用目标不一致");
+      }
+    }
+    if (request === undefined && identities.length > 0) {
+      // Incoming Core deletion also needs a durable identity while note cleanup
+      // and its acknowledgement span several saves. Older Core jobs omit the
+      // optional logical/legacy aliases, so compare the four canonical fields.
+      const { type: _type, deletedAt, ...identity } = commit;
+      this.data = { ...this.data, referenceDeleteRequests: [...this.data.referenceDeleteRequests, {
+        ...identity, type: "reference-delete-request", actionId: crypto.randomUUID(), requestedAt: deletedAt,
+      }] };
+      await this.persist();
+    }
     await this.cleanupLocalReferenceDeletion(commit);
     this.data = acknowledgeReferenceDelete(this.data, commit.referenceId);
     await this.persist();

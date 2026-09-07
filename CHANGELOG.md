@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.6.3 - 2026-09-07
+
+- Persist reference captures before opening DSH. Offline or failed navigation
+  keeps the delivery queue recoverable, and navigation never holds the shared
+  state lock. Retry resolves the current controller URL after a port change.
+- Report capture failures through both selection menus. Compensate failed
+  persistence in the editor buffer and the vault only for unshared markers
+  created by the plugin; preserve user-owned blocks and later editor changes.
+  Reserve each note's marker while captures await persistence and transfer its
+  ownership to surviving captures; never compensate by searching other notes.
+- Validate editor captures before writing a marker. Reading captures adopt a
+  block added while the menu was open and reject changed source text.
+- Validate deletion confirmations against persisted profile, session, set, and
+  reference identity before note cleanup. Retain a durable deletion checkpoint
+  across partial saves and accept completed duplicate confirmations as no-ops.
+  Recover orphan backlinks left by older state saves using their embedded
+  identity, even when no local capture, receipt, or deletion request remains.
+
 ## 0.6.2 - Unreleased
 
 - Bundle shared protocol subpaths into the standalone Obsidian entry. Check all

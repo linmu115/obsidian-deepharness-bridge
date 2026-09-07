@@ -4,10 +4,13 @@ import DeepHarnessBridgePlugin from "../src/main.ts";
 import { startBridgeServer, type RunningBridge } from "../src/bridge/server.ts";
 import { DEFAULT_SETTINGS } from "../src/settings.ts";
 import type { PendingReferenceRecord, StoredPluginDataV2 } from "../src/migrations/v1-pending.ts";
-import type { BacklinkCommitV2, ReferenceClaimV2, ReferenceRefreshRequestV2, ReferenceRefreshResultV2 } from "../src/protocol.ts";
+import type { BacklinkCommitV2, ReferenceClaimV2, ReferenceDeleteCommitV2, ReferenceRefreshRequestV2, ReferenceRefreshResultV2 } from "../src/protocol.ts";
 import { createObsidianReferenceCapture } from "../src/vault/reference-source.ts";
 import { ObsidianVaultAdapter } from "../src/vault/obsidian-adapter.ts";
 import { syntheticApp } from "./helpers/obsidian-vault.ts";
+import { ClientActionQueue } from "../src/bridge/queue.ts";
+import { ensureDshWebViewer } from "../src/webviewer/adapter.ts";
+import { captureEditorSelection, type NoteSelection } from "../src/selection/editor-menu.ts";
 
 vi.mock("obsidian", async () => {
   const stub = await import("./helpers/obsidian-vault.ts");
@@ -36,10 +39,13 @@ interface Internals {
   data: StoredPluginDataV2;
   adapter?: ObsidianVaultAdapter;
   bridge: RunningBridge | null;
+  queueReference(selection: NoteSelection): Promise<void>;
+  resolveDshViewerUrl(): Promise<string>;
   claimReference(claim: ReferenceClaimV2): Promise<void>;
   refreshReference(request: ReferenceRefreshRequestV2): Promise<ReferenceRefreshResultV2>;
   commitBacklink(commit: BacklinkCommitV2): Promise<unknown>;
   deleteReferencesForMarker(marker: string): Promise<void>;
+  deleteCommittedReference(commit: ReferenceDeleteCommitV2): Promise<void>;
 }
 
 const opened: DeepHarnessBridgePlugin[] = [];
@@ -82,10 +88,232 @@ function fixture(records: PendingReferenceRecord[] = []) {
   return { ...host, plugin, internals };
 }
 
-beforeEach(() => { vi.stubGlobal("document", {}); vi.mocked(startBridgeServer).mockReset(); vi.mocked(startBridgeServer).mockImplementation(async () => bridgeStub()); });
+beforeEach(() => { vi.stubGlobal("document", {}); vi.mocked(ensureDshWebViewer).mockReset(); vi.mocked(startBridgeServer).mockReset(); vi.mocked(startBridgeServer).mockImplementation(async () => bridgeStub()); });
 afterEach(async () => { await Promise.all(opened.splice(0).map((plugin) => plugin.shutdown())); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe("plugin state persistence and lifecycle", () => {
+  it("protects a queued capture when an older reference sharing its marker is cancelled first", async () => {
+    const a = claimed("a", "plugin-created");
+    const { plugin, internals, files } = fixture([{ ...a, state: "queued" }]);
+    const started = gate(); const release = gate();
+    vi.mocked(plugin.saveData).mockImplementationOnce(async () => { started.resolve(); await release.promise; });
+    vi.spyOn(internals, "resolveDshViewerUrl").mockResolvedValue("http://127.0.0.1:3080/");
+    const blocking = plugin.updateSettings({ dshLaunchLogPath: "" }); await started.promise;
+    const discard = plugin.discardReference("a");
+    const second = internals.queueReference({ ...a.capture, actionId: "action-b", referenceId: "b", requiresBlockIdWrite: false, blockIdOwnership: "pre-existing" });
+    release.resolve(); await Promise.all([blocking, discard, second]);
+    expect(files.get("a.md")).toBe("quote ^dsh-note-a\n");
+    expect(plugin.pendingReferences).toMatchObject([{ capture: { referenceId: "b" }, blockIdOwnership: "plugin-created" }]);
+    await plugin.discardReference("b");
+    expect(files.get("a.md")).toBe("quote\n");
+  });
+
+  it.each([true, false])("reserves a shared editor marker while an earlier save fails (second save succeeds: %s)", async (secondSucceeds) => {
+    const { plugin, internals, put } = fixture(); put("editor.md", "quote\n");
+    let value = "quote\n";
+    const editor = {
+      getSelection: () => "quote", getValue: () => value, getCursor: (which: "from" | "to") => ({ line: 0, ch: which === "from" ? 0 : 5 }),
+      getLine: () => value.split("\n")[0]!,
+      replaceRange: (text: string, from: { line: number; ch: number }, to = from) => { value = value.slice(0, from.ch) + text + value.slice(to.ch); },
+    };
+    const a = captureEditorSelection(editor, { path: "editor.md" }, { createReferenceId: () => "a" })!;
+    const started = gate(); const release = gate();
+    vi.spyOn(internals, "resolveDshViewerUrl").mockResolvedValue("http://127.0.0.1:3080/");
+    vi.mocked(plugin.saveData).mockImplementationOnce(async () => { started.resolve(); await release.promise; throw new Error("first save failed"); });
+    vi.mocked(plugin.saveData).mockImplementationOnce(async () => {
+      expect(value).toBe("quote ^dsh-note-2d02ffd5\n");
+      if (!secondSucceeds) throw new Error("second save failed");
+    });
+    const first = internals.queueReference(a); const firstResult = first.catch((error: Error) => error.message);
+    await started.promise;
+    const b = captureEditorSelection(editor, { path: "editor.md" }, { createReferenceId: () => "b" })!;
+    expect(b.blockIdOwnership).toBe("pre-existing");
+    const second = internals.queueReference(b); const secondResult = second.catch((error: Error) => error.message);
+    release.resolve();
+    expect(await firstResult).toBe("first save failed");
+    expect(await secondResult).toBe(secondSucceeds ? undefined : "second save failed");
+    if (secondSucceeds) {
+      expect(plugin.pendingReferences).toMatchObject([{ state: "queued", capture: { referenceId: "b" }, blockIdOwnership: "plugin-created" }]);
+      put("editor.md", value);
+      await plugin.discardReference("b");
+      expect(await internals.adapter!.read("editor.md")).toBe("quote\n");
+    } else {
+      expect(value).toBe("quote\n");
+      expect(plugin.pendingReferences).toEqual([]);
+    }
+  });
+
+  it("does not treat an identical block ID in another note as ownership of the failed capture marker", async () => {
+    const other = claimed("other", "pre-existing");
+    other.capture.source.locator.blockId = "dsh-note-a";
+    const { plugin, internals, put, files } = fixture([other]);
+    put("other.md", "quote ^dsh-note-a\n"); put("a.md", "quote ^dsh-note-a\n");
+    const a = claimed("a", "plugin-created");
+    vi.mocked(plugin.saveData).mockRejectedValueOnce(new Error("save failed"));
+    await expect(internals.queueReference({ ...a.capture, requiresBlockIdWrite: false, blockIdOwnership: "plugin-created" })).rejects.toThrow("save failed");
+    expect(files.get("a.md")).toBe("quote\n");
+    expect(files.get("other.md")).toBe("quote ^dsh-note-a\n");
+  });
+
+  it("does not compensate an unflushed marker by deleting the same ID from a different note", async () => {
+    const { plugin, internals, put, files } = fixture();
+    put("a.md", "quote\n"); put("other.md", "user content ^dsh-note-a\n");
+    const a = claimed("a", "plugin-created");
+    vi.mocked(plugin.saveData).mockRejectedValueOnce(new Error("save failed"));
+    await expect(internals.queueReference({ ...a.capture, requiresBlockIdWrite: false, blockIdOwnership: "plugin-created", rollbackBlockId() {} })).rejects.toThrow("save failed");
+    expect(files.get("a.md")).toBe("quote\n");
+    expect(files.get("other.md")).toBe("user content ^dsh-note-a\n");
+  });
+
+  it("cleans an orphan backlink after legacy state loss and rejects mismatched orphan metadata", async () => {
+    const original = fixture([claimed("a")]);
+    await original.internals.commitBacklink({ annotationProtocolVersion: 2, type: "backlink-commit", referenceId: "a", profileId: "web", sessionId: "session", setId: "set-a", userMessageId: "message", userAnchorId: "anchor", userTextHash: "sha256:text" });
+    const orphan = original.files.get("a.md")!;
+    const { plugin, internals, put, files } = fixture(); put("a.md", orphan);
+    const commit: ReferenceDeleteCommitV2 = { annotationProtocolVersion: 2, type: "reference-delete-commit", referenceId: "a", profileId: "web", sessionId: "session", setId: "set-a", deletedAt: 1 };
+    await expect(internals.deleteCommittedReference({ ...commit, sessionId: "wrong" })).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+    expect(files.get("a.md")).toBe(orphan);
+    await internals.deleteCommittedReference(commit);
+    expect(files.get("a.md")).not.toContain("<!-- dsh-reference:");
+    expect(plugin.pendingReferences).toEqual([]);
+    vi.mocked(plugin.saveData).mockRejectedValue(new Error("duplicate must not save"));
+    await expect(internals.deleteCommittedReference(commit)).resolves.toBeUndefined();
+  });
+
+  it("compensates a selection rejected because the plugin has stopped", async () => {
+    const { plugin, internals, put, files } = fixture();
+    const a = claimed("a", "plugin-created"); put("a.md", "quote ^dsh-note-a\n");
+    await plugin.shutdown();
+    await expect(internals.queueReference({ ...a.capture, blockIdOwnership: "plugin-created", requiresBlockIdWrite: false })).rejects.toMatchObject({ code: "INVALID_STATE" });
+    expect(files.get("a.md")).toBe("quote\n");
+    expect(plugin.pendingReferences).toEqual([]);
+  });
+
+  it("keeps a durable capture recoverable when delivery rejects and retries against the current viewer URL", async () => {
+    const { plugin, internals, put } = fixture();
+    const a = claimed("a", "plugin-created"); put("a.md", "quote ^dsh-note-a\n");
+    internals.bridge!.enqueue = () => { throw new Error("Bridge is stopping"); };
+    const urls: string[] = [];
+    let url = "http://127.0.0.1:3080/";
+    vi.spyOn(internals, "resolveDshViewerUrl").mockImplementation(async () => url);
+    vi.mocked(ensureDshWebViewer).mockImplementation(async (_app, target) => { urls.push(target); throw new Error("server stopped"); });
+    await expect(internals.queueReference({ ...a.capture, blockIdOwnership: "plugin-created", requiresBlockIdWrite: false })).resolves.toBeUndefined();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(plugin.pendingReferences).toHaveLength(1);
+    const queue = new ClientActionQueue(); internals.bridge!.enqueue = (message) => queue.enqueue(message);
+    url = "http://127.0.0.1:45981/";
+    await plugin.retryPendingWork();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(urls).toEqual(["http://127.0.0.1:3080/", "http://127.0.0.1:45981/"]);
+    expect(queue.pending("surface", 0).actions.map(({ message }) => message.actionId)).toEqual(["action-a"]);
+  });
+
+  it.each(["profileId", "sessionId", "setId"] as const)("rejects a deletion with a wrong %s before cleaning a claimed marker", async (field) => {
+    const { plugin, internals, files } = fixture([claimed("a", "plugin-created")]);
+    await expect(internals.deleteCommittedReference({ annotationProtocolVersion: 2, type: "reference-delete-commit", referenceId: "a", profileId: "web", sessionId: "session", setId: "set-a", deletedAt: 1, [field]: "wrong" })).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+    expect(files.get("a.md")).toBe("quote ^dsh-note-a\n");
+    expect(plugin.pendingReferences).toHaveLength(1);
+  });
+
+  it.each(["profileId", "sessionId", "setId"] as const)("rejects a wrong %s acknowledgement after local deletion leaves only the durable request", async (field) => {
+    const { plugin, internals, files } = fixture([claimed("a", "plugin-created")]);
+    await internals.deleteReferencesForMarker("^dsh-note-a");
+    expect(plugin.pendingReferences).toEqual([]);
+    await expect(internals.deleteCommittedReference({ annotationProtocolVersion: 2, type: "reference-delete-commit", referenceId: "a", profileId: "web", sessionId: "session", setId: "set-a", deletedAt: 1, [field]: "wrong" })).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+    expect(internals.data.referenceDeleteRequests).toMatchObject([{ referenceId: "a", profileId: "web", sessionId: "session", setId: "set-a" }]);
+    expect(files.get("a.md")).toBe("quote\n");
+  });
+
+  it("retains deletion identity after a partial cleanup save and makes duplicate commits a no-op", async () => {
+    const { plugin, internals, files } = fixture([claimed("a", "plugin-created")]);
+    const commit: ReferenceDeleteCommitV2 = { annotationProtocolVersion: 2, type: "reference-delete-commit", referenceId: "a", profileId: "web", sessionId: "session", setId: "set-a", deletedAt: 1 };
+    vi.mocked(plugin.saveData).mockImplementation(async (data) => {
+      const value = data as StoredPluginDataV2;
+      if (value.pendingReferences.length === 0 && value.referenceDeleteRequests.length === 0) throw new Error("ack save failed");
+    });
+    await expect(internals.deleteCommittedReference(commit)).rejects.toThrow("ack save failed");
+    expect(internals.data.referenceDeleteRequests).toMatchObject([{ referenceId: "a", sessionId: "session", setId: "set-a" }]);
+    await expect(internals.deleteCommittedReference({ ...commit, sessionId: "wrong" })).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+    vi.mocked(plugin.saveData).mockResolvedValue(undefined);
+    await internals.deleteCommittedReference(commit);
+    expect(plugin.pendingReferences).toEqual([]); expect(internals.data.referenceDeleteRequests).toEqual([]);
+    expect(files.get("a.md")).toBe("quote\n");
+    vi.mocked(plugin.saveData).mockRejectedValue(new Error("duplicate must not save"));
+    await expect(internals.deleteCommittedReference(commit)).resolves.toBeUndefined();
+  });
+
+  it("rolls back a failed capture in the editor buffer before Obsidian flushes it to the vault", async () => {
+    const { plugin, internals, put, files } = fixture(); put("editor.md", "quote\n");
+    let value = "quote\n";
+    const selection = captureEditorSelection({
+      getSelection: () => "quote", getValue: () => value, getCursor: (which) => ({ line: 0, ch: which === "from" ? 0 : 5 }),
+      getLine: () => value.split("\n")[0]!,
+      replaceRange: (text, from, to = from) => { value = value.slice(0, from.ch) + text + value.slice(to.ch); },
+    }, { path: "editor.md" })!;
+    vi.spyOn(internals, "resolveDshViewerUrl").mockResolvedValue("http://127.0.0.1:3080/");
+    vi.mocked(plugin.saveData).mockRejectedValueOnce(new Error("disk unavailable"));
+    await expect(internals.queueReference(selection)).rejects.toThrow("disk unavailable");
+    expect(value).toBe("quote\n");
+    expect(files.get("editor.md")).toBe("quote\n");
+    expect(plugin.pendingReferences).toEqual([]);
+  });
+
+  it("persists an offline capture before navigation and restores it into a fresh delivery queue", async () => {
+    const a = claimed("a", "plugin-created");
+    const { plugin, internals, put, files } = fixture();
+    put("a.md", "quote ^dsh-note-a\n");
+    const queue = new ClientActionQueue();
+    internals.bridge!.enqueue = (message) => queue.enqueue(message);
+    vi.spyOn(internals, "resolveDshViewerUrl").mockRejectedValue(new Error("DSH offline"));
+    await expect(internals.queueReference({ ...a.capture, requiresBlockIdWrite: false, blockIdOwnership: "plugin-created" })).resolves.toBeUndefined();
+    expect(plugin.pendingReferences).toMatchObject([{ state: "queued", capture: { referenceId: "a" } }]);
+    const saved = structuredClone(vi.mocked(plugin.saveData).mock.calls.at(-1)![0]) as StoredPluginDataV2;
+    expect(saved.pendingReferences).toMatchObject([{ capture: { referenceId: "a" }, blockIdOwnership: "plugin-created" }]);
+    expect(queue.pending("surface", 0).actions.map(({ message }) => message.type)).toEqual(["reference-capture"]);
+    expect(files.get("a.md")).toBe("quote ^dsh-note-a\n");
+    await plugin.shutdown();
+    const replacement = fixture(saved.pendingReferences);
+    replacement.internals.bridge = null;
+    const restored = new ClientActionQueue(); const bridge = bridgeStub();
+    bridge.enqueue = (message) => restored.enqueue(message);
+    vi.mocked(startBridgeServer).mockResolvedValueOnce(bridge);
+    vi.spyOn(replacement.internals, "resolveDshViewerUrl").mockRejectedValue(new Error("still offline"));
+    await replacement.plugin.retryPendingWork();
+    expect(restored.pending("surface", 0).actions.map(({ message }) => message.actionId)).toEqual(["action-a"]);
+  });
+
+  it("does not hold state mutations or resurrect a cancelled capture while navigation is stalled", async () => {
+    const { plugin, internals, put, files } = fixture();
+    const a = claimed("a", "plugin-created"); put("a.md", "quote ^dsh-note-a\n");
+    const queue = new ClientActionQueue(); internals.bridge!.enqueue = (message) => queue.enqueue(message);
+    internals.bridge!.cancelReference = (id) => queue.cancelReference(id);
+    vi.spyOn(internals, "resolveDshViewerUrl").mockResolvedValue("http://127.0.0.1:3080/");
+    const started = gate(); const release = gate();
+    vi.mocked(ensureDshWebViewer).mockImplementationOnce(async () => { started.resolve(); await release.promise; throw new Error("navigation failed"); });
+    const capture = internals.queueReference({ ...a.capture, requiresBlockIdWrite: false, blockIdOwnership: "plugin-created" });
+    await started.promise;
+    try {
+      expect(plugin.pendingReferences).toHaveLength(1);
+      await plugin.discardReference("a");
+      expect(files.get("a.md")).toBe("quote\n");
+      expect(queue.pending("surface", 0).actions).toEqual([]);
+    } finally { release.resolve(); await capture.catch(() => undefined); }
+    expect(plugin.pendingReferences).toEqual([]);
+    expect(queue.pending("surface", 0).actions).toEqual([]);
+  });
+
+  it.each(["plugin-created", "pre-existing"] as const)("compensates failed capture persistence only for a %s marker", async (ownership) => {
+    const { plugin, internals, put, files } = fixture();
+    const a = claimed("a", ownership); put("a.md", "quote ^dsh-note-a\n");
+    vi.spyOn(internals, "resolveDshViewerUrl").mockResolvedValue("http://127.0.0.1:3080/");
+    const queue = new ClientActionQueue(); internals.bridge!.enqueue = (message) => queue.enqueue(message);
+    vi.mocked(plugin.saveData).mockRejectedValueOnce(new Error("disk unavailable"));
+    await expect(internals.queueReference({ ...a.capture, requiresBlockIdWrite: false, blockIdOwnership: ownership })).rejects.toThrow("disk unavailable");
+    expect(plugin.pendingReferences).toEqual([]);
+    expect(queue.pending("surface", 0).actions).toEqual([]);
+    expect(files.get("a.md")).toBe(ownership === "plugin-created" ? "quote\n" : "quote ^dsh-note-a\n");
+  });
+
   it("does not start or save after unload during initial data loading", async () => {
     const { app } = syntheticApp(); const plugin = new DeepHarnessBridgePlugin(app, manifest); opened.push(plugin);
     const started = gate(); const release = gate();

@@ -1,16 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { captureEditorSelection } from "../src/selection/editor-menu.ts";
-import { captureReadingSelection, registerReadingSelectionMenu } from "../src/selection/reading-menu.ts";
+import { captureEditorSelection, registerEditorSelectionMenu } from "../src/selection/editor-menu.ts";
+import { captureReadingSelection, ensureReadingBlockId, registerReadingSelectionMenu } from "../src/selection/reading-menu.ts";
 import { documentHash, selectedTextHash } from "../src/protocol.ts";
 
 class FakeEditor {
   value = "# Generation\n\nGeneration 保存完整组合。\n";
   selection = "Generation 保存完整组合。";
-  replaceRange = vi.fn((replacement: string, from: { line: number; ch: number }) => {
+  replaceRange = vi.fn((replacement: string, from: { line: number; ch: number }, to = from) => {
     const lines = this.value.split("\n");
     const line = lines[from.line] ?? "";
-    lines[from.line] = `${line.slice(0, from.ch)}${replacement}${line.slice(from.ch)}`;
+    lines[from.line] = `${line.slice(0, from.ch)}${replacement}${line.slice(to.ch)}`;
     this.value = lines.join("\n");
   });
 
@@ -23,6 +23,44 @@ class FakeEditor {
 }
 
 describe("Obsidian selection capture", () => {
+  it("reports an editor capture failure without an unhandled menu rejection", async () => {
+    let listener!: (menu: unknown, editor: unknown, info: unknown) => void;
+    let click!: () => Promise<void>;
+    const errors: string[] = [];
+    const item = { setTitle() { return this; }, setIcon() { return this; }, onClick(handler: typeof click) { click = handler; return this; } };
+    registerEditorSelectionMenu({ app: { workspace: { on: (_event: string, callback: typeof listener) => { listener = callback; } } }, registerEvent() {} } as never,
+      async () => { throw new Error("disk unavailable"); }, () => ({}), (error) => errors.push((error as Error).message));
+    listener({ addItem: (configure: (item: unknown) => void) => configure(item) }, new FakeEditor(), { file: { path: "note.md" } });
+    await expect(click()).resolves.toBeUndefined();
+    expect(errors).toEqual(["disk unavailable"]);
+  });
+
+  it("does not write an editor marker when capture validation fails", () => {
+    const editor = new FakeEditor();
+    expect(() => captureEditorSelection(editor, { path: "note.md" }, { createReferenceId: () => "" })).toThrow();
+    expect(editor.value).toBe("# Generation\n\nGeneration 保存完整组合。\n");
+  });
+
+  it("adopts a user block added after the reading menu opened without taking ownership", async () => {
+    const node = {};
+    const selection = captureReadingSelection({ file: { path: "note.md" }, containerEl: { contains: () => true }, getViewData: () => "quote\n" }, {
+      rangeCount: 1, toString: () => "quote", getRangeAt: () => ({ commonAncestorContainer: node }),
+    })!;
+    let markdown = "quote ^user-owned\n";
+    const ready = await ensureReadingBlockId({ process: async (_file, update) => markdown = update(markdown) }, { path: "note.md" } as never, selection);
+    expect(markdown).toBe("quote ^user-owned\n");
+    expect(ready).toMatchObject({ blockIdOwnership: "pre-existing", requiresBlockIdWrite: false, source: { locator: { blockId: "user-owned" } } });
+  });
+
+  it("rejects a moved reading selection rather than marking a different occurrence", async () => {
+    const selection = captureReadingSelection({ file: { path: "note.md" }, containerEl: { contains: () => true }, getViewData: () => "quote\n" }, {
+      rangeCount: 1, toString: () => "quote", getRangeAt: () => ({ commonAncestorContainer: {} }),
+    })!;
+    let markdown = "quote inserted\n\nquote\n";
+    await expect(ensureReadingBlockId({ process: async (_file, update) => markdown = update(markdown) }, { path: "note.md" } as never, selection)).rejects.toThrow();
+    expect(markdown).toBe("quote inserted\n\nquote\n");
+  });
+
   it("normalizes editor text and assigns a stable paragraph block ID", () => {
     const editor = new FakeEditor();
     editor.selection = "  Generation 保存完整组合。\r\n";
@@ -164,7 +202,7 @@ describe("Obsidian selection capture", () => {
     });
   });
 
-  it("preserves Copy and appends DSH in Obsidian's shared event menu", () => {
+  it("preserves Copy and reports a reading marker write failure through the shared event menu", async () => {
     const previewNode = {};
     const selection = {
       rangeCount: 1,
@@ -181,7 +219,7 @@ describe("Obsidian selection capture", () => {
     const fakeDocument = { getSelection: () => selection };
     const plugin = {
       app: {
-        vault: {},
+        vault: { process: async () => { throw new Error("note is read-only"); } },
         workspace: { getActiveViewOfType: () => view },
       },
       registerDomEvent: (_target: unknown, _type: string, callback: (event: MouseEvent) => void, options?: boolean | AddEventListenerOptions) => {
@@ -205,6 +243,7 @@ describe("Obsidian selection capture", () => {
     };
     const event = { preventDefault: vi.fn() } as unknown as MouseEvent;
     const copyText = vi.fn();
+    const errors: string[] = [];
 
     registerReadingSelectionMenu(plugin as never, {
       markdownViewType: class FakeMarkdownView {} as never,
@@ -212,6 +251,7 @@ describe("Obsidian selection capture", () => {
       menuForEvent: () => menu as never,
       copyText,
       onCitation: vi.fn(),
+      onError: (error) => errors.push((error as Error).message),
     });
     listener?.(event);
 
@@ -223,6 +263,8 @@ describe("Obsidian selection capture", () => {
     expect(clickHandlers).toHaveLength(2);
     void clickHandlers[0]?.();
     expect(copyText).toHaveBeenCalledWith("可引用原文。");
+    await expect(clickHandlers[1]!()).resolves.toBeUndefined();
+    expect(errors).toEqual(["note is read-only"]);
   });
 
   it("leaves the original menu untouched when a reading selection cannot be resolved", () => {

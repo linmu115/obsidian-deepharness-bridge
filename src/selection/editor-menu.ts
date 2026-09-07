@@ -7,6 +7,8 @@ import { createObsidianReferenceCapture, selectionOffsets } from "../vault/refer
 export interface NoteSelection extends ObsidianReferenceCaptureV2 {
   requiresBlockIdWrite: boolean;
   blockIdOwnership: "plugin-created" | "pre-existing";
+  /** Compensation must reach an editor buffer that may not be flushed to disk. */
+  rollbackBlockId?: () => void;
 }
 
 export interface SelectionCaptureOptions {
@@ -21,7 +23,7 @@ interface EditorLike {
   getValue(): string;
   getCursor(which: "from" | "to"): { line: number; ch: number };
   getLine(line: number): string;
-  replaceRange(replacement: string, from: { line: number; ch: number }): void;
+  replaceRange(replacement: string, from: { line: number; ch: number }, to?: { line: number; ch: number }): void;
 }
 
 interface FileLike { path: string }
@@ -88,11 +90,14 @@ export function captureEditorSelection(
   const blockIdOwnership = blockId ? "pre-existing" as const : "plugin-created" as const;
   if (!blockId) {
     blockId = stableBlockId(file.path, from.line, text);
-    editor.replaceRange(` ^${blockId}`, { line: to.line, ch: targetLine.length });
   }
-  const source = editor.getValue().replace(/\r\n?/g, "\n");
+  const insertion = ` ^${blockId}`;
+  const lines = sourceBefore.split("\n");
+  if (blockIdOwnership === "plugin-created") lines[to.line] = `${targetLine}${insertion}`;
+  const source = lines.join("\n");
   const values = captureOptions(options);
-  return {
+  // Validate and generate identifiers before the first note mutation.
+  const result: NoteSelection = {
     ...createObsidianReferenceCapture({
       actionId: values.createActionId(),
       referenceId: values.createReferenceId(),
@@ -108,12 +113,28 @@ export function captureEditorSelection(
     requiresBlockIdWrite: false,
     blockIdOwnership,
   };
+  if (blockIdOwnership === "plugin-created") {
+    editor.replaceRange(insertion, { line: to.line, ch: targetLine.length });
+    result.rollbackBlockId = () => {
+      const current = editor.getValue().replace(/\r\n?/g, "\n").split("\n");
+      const matching = current.flatMap((line, index) => line.endsWith(insertion) ? [index] : []);
+      if (matching.length === 0) return;
+      const line = matching[0]!;
+      // Preserve subsequent user edits and ambiguous copied markers.
+      if (matching.length !== 1 || current[line] !== `${targetLine}${insertion}`) {
+        throw new Error(`原文已修改，请检查定位标记 ^${blockId}`);
+      }
+      editor.replaceRange("", { line, ch: targetLine.length }, { line, ch: current[line]!.length });
+    };
+  }
+  return result;
 }
 
 export function registerEditorSelectionMenu(
   plugin: Plugin,
   onCitation: (selection: NoteSelection) => Promise<void>,
   options: () => SelectionCaptureOptions = () => ({}),
+  onError: (error: unknown) => void = console.error,
 ): void {
   plugin.registerEvent(plugin.app.workspace.on("editor-menu", (menu: Menu, editor: Editor, info: MarkdownFileInfo) => {
     const file = info.file;
@@ -122,8 +143,10 @@ export function registerEditorSelectionMenu(
       .setTitle("引用到 DSH")
       .setIcon("quote")
       .onClick(async () => {
-        const selection = captureEditorSelection(editor, file, options());
-        if (selection) await onCitation(selection);
+        try {
+          const selection = captureEditorSelection(editor, file, options());
+          if (selection) await onCitation(selection);
+        } catch (error) { onError(error); }
       }));
   }));
 }

@@ -142,18 +142,32 @@ export async function ensureReadingBlockId(
   selection: NoteSelection,
 ): Promise<NoteSelection> {
   if (!selection.requiresBlockIdWrite) return selection;
+  let blockId = selection.source.locator.blockId;
+  let blockIdOwnership = selection.blockIdOwnership;
   const output = await vault.process(file, (content) => {
     const source = content.replace(/\r\n?/g, "\n");
+    // A menu can stay open while the document changes. Ignore only trailing
+    // block identifiers; any textual change requires selecting the quote again.
+    const withoutMarkers = (value: string) => value.replace(/[ \t]+\^[A-Za-z0-9-]+[ \t]*(?=\r?$)/gm, "");
+    if (withoutMarkers(source) !== withoutMarkers(selection.source.snapshot.markdown)) {
+      throw new Error("原文已修改，请重新选择引用内容");
+    }
     const offset = selectionOffsets(source, selection.source.selectedText)[selection.source.locator.occurrence];
     if (offset === undefined) throw new Error("Selected paragraph changed before its block ID could be written");
     const line = lineForOffset(source, offset);
-    if (/(?:^|\s)\^[A-Za-z0-9-]+\s*$/.test(line.text)) return source;
+    const existing = /(?:^|\s)\^([A-Za-z0-9-]+)\s*$/.exec(line.text)?.[1];
+    if (existing) {
+      blockId = existing;
+      blockIdOwnership = "pre-existing";
+      return source;
+    }
     return `${source.slice(0, line.end)} ^${selection.source.locator.blockId}${source.slice(line.end)}`;
   });
   return {
     ...selection,
     source: {
       ...selection.source,
+      locator: { ...selection.source.locator, blockId },
       snapshot: {
         markdown: output,
         documentHash: documentHash(output),
@@ -162,7 +176,7 @@ export async function ensureReadingBlockId(
       },
     },
     requiresBlockIdWrite: false,
-    blockIdOwnership: selection.blockIdOwnership,
+    blockIdOwnership,
   };
 }
 
@@ -175,6 +189,7 @@ export interface ReadingMenuOptions {
   copyText?(text: string): Promise<void> | void;
   captureOptions?(): SelectionCaptureOptions;
   onCitation(selection: NoteSelection): Promise<void>;
+  onError?(error: unknown): void;
 }
 
 export function registerReadingSelectionMenu(plugin: Plugin, options: ReadingMenuOptions): void {
@@ -201,10 +216,12 @@ export function registerReadingSelectionMenu(plugin: Plugin, options: ReadingMen
       .setTitle("引用到 DSH")
       .setIcon("quote")
       .onClick(async () => {
-        const file = view.file;
-        if (!file) return;
-        const ready = await ensureReadingBlockId(plugin.app.vault, file, captured);
-        await options.onCitation(ready);
+        try {
+          const file = view.file;
+          if (!file || file.path !== captured.source.locator.notePath) throw new Error("当前笔记已切换，请重新选择引用内容");
+          const ready = await ensureReadingBlockId(plugin.app.vault, file, captured);
+          await options.onCitation(ready);
+        } catch (error) { (options.onError ?? console.error)(error); }
       }));
   // Obsidian resolves and shows its event-bound menu from a bubble listener.
   // Observe in capture phase so our item is present before the host displays
