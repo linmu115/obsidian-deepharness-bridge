@@ -85,3 +85,10 @@ describe("annotation protocol v2 boundary", () => {
     })).toMatchObject({ protocolVersion: 1, type: "session-note" });
   });
 });
+
+it("round-trips optional instance scope without changing old links", () => {
+  const location = { sessionId: "rc2-native", anchorId: "anchor", dshInstanceId: "rc2", logicalSessionId: "logical" };
+  const link = buildObsidianDshLink(location);
+  expect(parseDshLogicalLink(link, () => "test-action")).toMatchObject(location);
+  expect(buildObsidianDshLink({ sessionId: "old", anchorId: "old-anchor" })).toBe("obsidian://deepharness?session=old&anchor=old-anchor");
+});

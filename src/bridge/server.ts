@@ -64,6 +64,7 @@ interface TokenRecord {
   clientId: string;
   role: BridgeClientRole;
   surfaceId?: string;
+  dshInstanceId?: string;
   origin: string;
   expiresAt: number;
   lastSeenAt?: number;
@@ -118,6 +119,7 @@ class HttpError extends Error {
 const handshakeSchema = z.object({
   clientId: z.string().min(1).max(128),
   surfaceId: z.string().uuid().optional(),
+  dshInstanceId: z.string().min(1).max(256).optional(),
 });
 const BRIDGE_CAPABILITIES = [
   "reference-capture-v2",
@@ -125,10 +127,12 @@ const BRIDGE_CAPABILITIES = [
   "backlink-commit-v2",
   "reference-delete-v2",
   "targeted-deep-link-v1",
+  "instance-routing-v1",
   "sticker-backlink-delete-v1",
 ] as const;
 
 function visibleTo(authentication: TokenRecord, message: QueuedBridgeMessage): boolean {
+  if ("dshInstanceId" in message && message.dshInstanceId !== undefined && message.dshInstanceId !== authentication.dshInstanceId) return false;
   return message.type !== "deep-link"
     || message.targetSurfaceId === undefined
     || message.targetSurfaceId === authentication.surfaceId;
@@ -259,14 +263,18 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
       ...(drainRequestId === undefined ? {} : { drainRequestId }),
     });
   };
-  const activeDshViewerUrl = (): string | undefined => {
+  // Renewing an older instance's lease must not steal the currently selected
+  // viewer. Select the most recently attached controller, then keep it until it exits.
+  const activeController = (): BridgeLease | undefined => {
     cleanupExpired();
     return [...leases.values()]
-      .filter((lease) => lease.role === "controller" && lease.dshViewerUrl !== undefined)
-      .sort((left, right) => right.expiresAt - left.expiresAt
-        || right.acquiredAt - left.acquiredAt
-        || right.leaseId.localeCompare(left.leaseId))[0]
-      ?.dshViewerUrl;
+      .filter(lease => lease.role === "controller" && lease.dshViewerUrl !== undefined)
+      .sort((left, right) => right.acquiredAt - left.acquiredAt || right.leaseId.localeCompare(left.leaseId))[0];
+  };
+  const activeDshViewerUrl = (): string | undefined => activeController()?.dshViewerUrl;
+  const activeDshInstanceId = (): string | undefined => {
+    const lease = activeController();
+    return lease === undefined ? undefined : [...tokens.values()].find(token => token.role === "controller" && token.clientId === lease.clientId)?.dshInstanceId;
   };
   const assertCurrentBoot = (expectedBootId: string): void => {
     if (expectedBootId !== identity.bootId) {
@@ -347,6 +355,7 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
         tokens.set(token, {
           clientId: input.clientId,
           role: input.role,
+          ...(input.dshInstanceId === undefined ? {} : { dshInstanceId: input.dshInstanceId }),
           origin: callerIdentity,
           expiresAt,
         });
@@ -372,6 +381,7 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
           clientId: input.clientId,
           role: "surface",
           ...(input.surfaceId === undefined ? {} : { surfaceId: input.surfaceId }),
+          ...(input.dshInstanceId === undefined ? {} : { dshInstanceId: input.dshInstanceId }),
           origin: callerIdentity,
           expiresAt,
         });
@@ -384,6 +394,7 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
           capabilities: BRIDGE_CAPABILITIES,
           clientId: input.clientId,
           ...(input.surfaceId === undefined ? {} : { surfaceId: input.surfaceId }),
+          ...(input.dshInstanceId === undefined ? {} : { dshInstanceId: input.dshInstanceId }),
           token,
           expiresAt,
         } : { protocolVersion: PROTOCOL_VERSION, clientId: input.clientId, token, expiresAt }, allowedOrigin);
@@ -491,6 +502,11 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
         throw new HttpError(503, "Bridge is draining and does not accept new work", "INVALID_STATE");
       }
       countedWorkRequest = true;
+      const assertReferenceOwner = (referenceId: string, explicitInstanceId?: string) => {
+        const owner = queue.instanceForReference(referenceId);
+        if ((owner !== undefined && owner !== authentication.dshInstanceId) || (explicitInstanceId !== undefined && explicitInstanceId !== authentication.dshInstanceId))
+          throw new HttpError(409, "Reference belongs to a different DSH instance", "IDEMPOTENCY_CONFLICT");
+      };
       authentication.lastSeenAt = now();
       inFlightRequestCount += 1;
 
@@ -522,6 +538,9 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
       if (request.method === "POST" && v2AckMatch) {
         const actionId = decodeURIComponent(v2AckMatch[1] ?? "");
         const claim = ReferenceClaimV2Schema.parse(await readJsonBody(request, maxBodyBytes));
+        if (claim.dshInstanceId !== authentication.dshInstanceId) throw new HttpError(409, "Reference claim belongs to a different DSH instance", "IDEMPOTENCY_CONFLICT");
+        const action = queue.message(actionId);
+        if (action !== undefined && !visibleTo(authentication, action)) throw new HttpError(409, "Reference action targets a different DSH instance", "IDEMPOTENCY_CONFLICT");
         await referenceWork.run(claim.referenceId, async () => {
           const result = queue.checkClaim(actionId, claim);
           if (result === "missing" || result === "cancelled") throw new HttpError(404, "Reference action is no longer available", "NOTE_NOT_FOUND");
@@ -538,6 +557,7 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
       if (request.method === "POST" && refreshMatch) {
         const referenceId = decodeURIComponent(refreshMatch[1] ?? "");
         const input = ReferenceRefreshRequestV2Schema.parse(await readJsonBody(request, maxBodyBytes));
+        assertReferenceOwner(input.referenceId);
         if (input.referenceId !== referenceId) throw new HttpError(400, "Reference ID does not match request path");
         const result = ReferenceRefreshResultV2Schema.parse(
           await (options.onRefreshReference?.(input) ?? Promise.resolve({ kind: "offline" as const })),
@@ -550,8 +570,10 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
       if (request.method === "POST" && discardMatch) {
         const referenceId = decodeURIComponent(discardMatch[1] ?? "");
         const input = ReferenceDiscardV2Schema.parse(await readJsonBody(request, maxBodyBytes));
+        assertReferenceOwner(input.referenceId);
         if (input.referenceId !== referenceId) throw new HttpError(400, "Reference ID does not match request path");
         await referenceWork.run(referenceId, async () => {
+          assertReferenceOwner(input.referenceId);
           await options.onDiscardReference?.(input);
           queue.cancelReference(referenceId);
         });
@@ -561,7 +583,8 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
 
       if (request.method === "POST" && requestUrl.pathname === "/v2/backlinks/commit") {
         const input = BacklinkCommitV2Schema.parse(await readJsonBody(request, maxBodyBytes));
-        const result = await referenceWork.run(input.referenceId, async () => options.onCommitBacklink?.(input));
+        assertReferenceOwner(input.referenceId, input.dshInstanceId);
+        const result = await referenceWork.run(input.referenceId, async () => { assertReferenceOwner(input.referenceId, input.dshInstanceId); return options.onCommitBacklink?.(input); });
         if (result === undefined) throw new HttpError(501, "Backlink commit is unavailable");
         json(response, 200, result, allowedOrigin);
         return;
@@ -571,9 +594,11 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
       if (request.method === "POST" && deleteCommitMatch) {
         const referenceId = decodeURIComponent(deleteCommitMatch[1] ?? "");
         const input = ReferenceDeleteCommitV2Schema.parse(await readJsonBody(request, maxBodyBytes));
+        assertReferenceOwner(input.referenceId, input.dshInstanceId);
         if (input.referenceId !== referenceId) throw new HttpError(400, "Reference ID does not match request path");
         if (options.onDeleteCommittedReference === undefined) throw new HttpError(501, "Reference deletion is unavailable");
         await referenceWork.run(referenceId, async () => {
+          assertReferenceOwner(input.referenceId, input.dshInstanceId);
           await options.onDeleteCommittedReference!(input);
           queue.cancelReference(referenceId);
         });
@@ -593,7 +618,7 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
         await readJsonBody(request, maxBodyBytes);
         const actionId = decodeURIComponent(ackMatch[1] ?? "");
         const message = queue.message(actionId);
-        if (message?.type === "deep-link" && !visibleTo(authentication, message)) {
+        if (message !== undefined && !visibleTo(authentication, message)) {
           throw new HttpError(409, "Deep-link action belongs to another DSH surface");
         }
         // Multiple DSH surfaces can observe the same one-shot command before
@@ -702,7 +727,10 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
     },
     enqueue(message) {
       if (closed) throw new HttpError(503, "Bridge is stopping", "INVALID_STATE");
-      if (message.type === "reference-capture") return queue.enqueue(ObsidianReferenceCaptureV2Schema.parse(message));
+      if (message.type === "reference-capture") {
+        const dshInstanceId = message.dshInstanceId ?? activeDshInstanceId();
+        return queue.enqueue(ObsidianReferenceCaptureV2Schema.parse({ ...message, ...(dshInstanceId === undefined ? {} : { dshInstanceId }) }));
+      }
       if (message.type === "reference-delete-request") {
         const deletion = ReferenceDeleteRequestV2Schema.parse(message);
         queue.cancelReference(deletion.referenceId);

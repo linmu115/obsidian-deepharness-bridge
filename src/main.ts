@@ -628,6 +628,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
     const claim = record.state === "claimed" ? record.claim : undefined;
     const stableCommit = {
       ...commit,
+      ...(claim?.dshInstanceId ? { dshInstanceId: claim.dshInstanceId } : {}),
       ...(claim?.logicalSessionId ? { logicalSessionId: claim.logicalSessionId } : {}),
       ...(claim?.logicalSessionId ? { logicalAnchorId: commit.userAnchorId } : {}),
       legacySessionId: claim?.legacySessionId ?? commit.sessionId,
@@ -682,6 +683,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
 
   private async openReferenceTarget(target: CommittedReferenceNavigationTarget): Promise<void> {
     await handleDshUrl(buildObsidianDshLink({
+      ...(target.dshInstanceId ? { dshInstanceId: target.dshInstanceId } : {}),
       ...(target.logicalSessionId ? { logicalSessionId: target.logicalSessionId } : {}),
       ...(target.logicalAnchorId ? { logicalAnchorId: target.logicalAnchorId } : {}),
       ...(target.legacySessionId ? { legacySessionId: target.legacySessionId } : {}),
@@ -806,6 +808,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
         sessionId: record.claim.sessionId,
         setId: record.claim.setId,
         requestedAt: Date.now(),
+        ...(record.claim.dshInstanceId ? { dshInstanceId: record.claim.dshInstanceId } : {}),
         ...(record.claim.logicalSessionId ? { logicalSessionId: record.claim.logicalSessionId } : {}),
         ...(record.claim.logicalAnchorId ? { logicalAnchorId: record.claim.logicalAnchorId } : {}),
         ...(record.claim.legacySessionId ? { legacySessionId: record.claim.legacySessionId } : {}),
@@ -856,7 +859,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
       throw codedError("IDEMPOTENCY_CONFLICT", "引用尚未登记 DSH 会话，不能确认删除");
     }
     for (const identity of identities) {
-      if (identity.referenceId !== commit.referenceId || identity.profileId !== commit.profileId
+      if (identity.dshInstanceId !== commit.dshInstanceId || identity.referenceId !== commit.referenceId || identity.profileId !== commit.profileId
         || identity.sessionId !== commit.sessionId || identity.setId !== commit.setId) {
         throw codedError("IDEMPOTENCY_CONFLICT", "删除确认与已登记的 DSH 引用目标不一致");
       }

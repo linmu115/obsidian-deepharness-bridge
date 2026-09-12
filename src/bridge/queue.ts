@@ -95,12 +95,30 @@ export class ClientActionQueue {
       const entry = this.#entries.get(id) ?? this.#completed.get(id);
       if (!entry) continue;
       if (this.#entries.has(id)) removed += 1;
-      this.complete(id, { cursor: entry.cursor, referenceId, cancelled: true });
+      this.complete(id, { cursor: entry.cursor, referenceId, cancelled: true, ...("claim" in entry && entry.claim ? { claim: entry.claim } : {}) });
     }
     return removed;
   }
 
   message(id: string): QueuedBridgeMessage | undefined { return this.#entries.get(id)?.message; }
+
+  instanceForReference(referenceId: string): string | undefined {
+    for (const id of this.#referenceActions.get(referenceId) ?? []) {
+      const pending = this.#entries.get(id)?.message;
+      if (pending && "dshInstanceId" in pending && pending.dshInstanceId) return pending.dshInstanceId;
+      const claimed = this.#completed.get(id)?.claim?.dshInstanceId;
+      if (claimed) return claimed;
+    }
+    return undefined;
+  }
+
+  claimForReference(referenceId: string): ReferenceClaimV2 | undefined {
+    for (const id of this.#referenceActions.get(referenceId) ?? []) {
+      const claim = this.#completed.get(id)?.claim;
+      if (claim !== undefined) return claim;
+    }
+    return undefined;
+  }
 
   checkClaim(id: string, claim: ReferenceClaimV2): ClaimResult {
     const completed = this.#completed.get(id);

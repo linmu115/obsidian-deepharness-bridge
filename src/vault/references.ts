@@ -85,6 +85,7 @@ interface ReferenceMetadataV2 {
   userTextHash: string;
   commitDigest: string;
   blockId: string;
+  dshInstanceId?: string;
   logicalSessionId?: string;
   logicalAnchorId?: string;
   legacySessionId?: string;
@@ -100,6 +101,7 @@ export interface CommittedReferenceNavigationTarget {
   userMessageId: string;
   userAnchorId: string;
   userTextHash: string;
+  dshInstanceId?: string;
   logicalSessionId?: string;
   logicalAnchorId?: string;
   legacySessionId?: string;
@@ -117,7 +119,7 @@ function parseV2Metadata(value: string): ReferenceMetadataV2 | null {
       throw new ReferenceDocumentError("CORRUPT_MARKER", `A v2 dsh-reference marker is missing ${key}`);
     }
   }
-  for (const key of ["logicalSessionId", "logicalAnchorId", "legacySessionId", "legacyAnchorId"] as const) {
+  for (const key of ["dshInstanceId", "logicalSessionId", "logicalAnchorId", "legacySessionId", "legacyAnchorId"] as const) {
     if (metadata[key] !== undefined && (typeof metadata[key] !== "string" || metadata[key] === "")) {
       throw new ReferenceDocumentError("CORRUPT_MARKER", `A v2 dsh-reference marker has invalid ${key}`);
     }
@@ -167,6 +169,7 @@ function navigationTarget(
     userMessageId: metadata.userMessageId,
     userAnchorId: metadata.userAnchorId,
     userTextHash: metadata.userTextHash,
+    ...(metadata.dshInstanceId ? { dshInstanceId: metadata.dshInstanceId } : {}),
     ...(metadata.logicalSessionId ? { logicalSessionId: metadata.logicalSessionId } : {}),
     ...(metadata.logicalAnchorId ? { logicalAnchorId: metadata.logicalAnchorId } : {}),
     ...(metadata.legacySessionId ? { legacySessionId: metadata.legacySessionId } : {}),
@@ -296,12 +299,14 @@ function renderV2Reference(
     userTextHash: commit.userTextHash,
     commitDigest,
     blockId,
+    ...(commit.dshInstanceId ? { dshInstanceId: commit.dshInstanceId } : {}),
     ...(commit.logicalSessionId ? { logicalSessionId: commit.logicalSessionId } : {}),
     ...(commit.logicalAnchorId ? { logicalAnchorId: commit.logicalAnchorId } : {}),
     ...(commit.legacySessionId ? { legacySessionId: commit.legacySessionId } : {}),
     ...(commit.legacyAnchorId ? { legacyAnchorId: commit.legacyAnchorId } : {}),
   };
   const logicalLink = buildObsidianDshLink({
+    ...(commit.dshInstanceId ? { dshInstanceId: commit.dshInstanceId } : {}),
     ...(commit.logicalSessionId ? { logicalSessionId: commit.logicalSessionId } : {}),
     ...(commit.logicalAnchorId ? { logicalAnchorId: commit.logicalAnchorId } : {}),
     ...(commit.legacySessionId ? { legacySessionId: commit.legacySessionId } : {}),

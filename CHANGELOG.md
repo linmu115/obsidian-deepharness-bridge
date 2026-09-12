@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.4-rc2.1 — DSH 0.1.5-rc.2 (2026-09-12)
+
+186 tests passed. Persist optional instance identity in claims, backlinks, links and deletion receipts. Isolate queued/claimed/deleted references across same-profile instances. The newest attached controller remains the selected viewer while older controllers renew. Historical records, hashes, text, markers and single-instance clients retain their decoding. Deployment updates plugin code only and preserves data.json and Vault notes.
+
+
 ## 0.6.3 - 2026-09-07
 
 - Persist reference captures before opening DSH. Offline or failed navigation

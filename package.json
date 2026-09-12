@@ -1,6 +1,6 @@
 {
   "name": "obsidian-deepharness-bridge",
-  "version": "0.6.3",
+  "version": "0.6.4-rc2.1",
   "private": true,
   "description": "Obsidian companion bridge for DeepSeek Harness conversations",
   "dshKnowledge": {
@@ -60,7 +60,7 @@
     "package:companion": "node scripts/package-companion.mjs"
   },
   "dependencies": {
-    "dsh-obsidian-bridge-protocol": "git+https://github.com/linmu115/dsh-obsidian-bridge-protocol.git#cfb069a5a09dacfb2e4f64a26036dfe514225132",
+    "dsh-obsidian-bridge-protocol": "file:C:/Users/19717/OneDrive/文档/ChatGPT/dsh/.artifacts/rc2-profile-candidate/dsh-obsidian-bridge-protocol-0.3.3-rc2.1.tgz",
     "zod": "4.4.3"
   },
   "devDependencies": {
@@ -68,7 +68,7 @@
     "@codemirror/view": "6.38.6",
     "@types/jsdom": "21.1.7",
     "@types/node": "^24.3.0",
-    "dsh-annotation-core": "git+https://github.com/linmu115/dsh-annotation-core.git#de5c6d3e4784cfcfa4cc90b4e8c29d75a36a2161",
+    "dsh-annotation-core": "file:C:/Users/19717/OneDrive/文档/ChatGPT/dsh/.artifacts/rc2-profile-candidate/dsh-annotation-core-0.3.11-rc2.2.tgz",
     "jsdom": "26.1.0",
     "obsidian": "^1.13.1",
     "tar": "^7.5.1",

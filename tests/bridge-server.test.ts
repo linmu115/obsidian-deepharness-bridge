@@ -789,3 +789,82 @@ describe("loopback bridge server", () => {
     expect(await response.json()).toEqual({ error: "source changed", code: "SOURCE_CHANGED" });
   });
 });
+
+it("isolates two web instances through capture, claim, deletion and a restored claim", async () => {
+  const onClaimReference = vi.fn(async () => {});
+  const onDiscardReference = vi.fn(async () => {});
+  const bridge = await start({ onClaimReference, onDiscardReference });
+  async function instanceToken(instance: string) {
+    const response = await request(bridge, "/v2/handshake", {
+      method: "POST", headers: { "content-type": "application/json", origin: DSH_ORIGIN },
+      body: JSON.stringify({ clientId: `web-${instance}`, dshInstanceId: instance }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json() as { token: string; dshInstanceId: string; capabilities: string[] };
+    expect(body.dshInstanceId).toBe(instance);
+    expect(body.capabilities).toContain("instance-routing-v1");
+    return body.token;
+  }
+  const [a, b, legacy] = await Promise.all([instanceToken("a"), instanceToken("b"), handshakeV2(bridge, "legacy-web")]);
+  const capture = { ...raceCapture(), dshInstanceId: "a" };
+  bridge.enqueue(capture);
+  const claim = { ...raceClaim, dshInstanceId: "a" };
+  async function discard(token: string) {
+    return request(bridge, "/v2/references/race-reference/discard", { method: "POST",
+      headers: authorized(token, { "content-type": "application/json" }),
+      body: JSON.stringify({ annotationProtocolVersion: 2, type: "reference-discard", referenceId: "race-reference" }) });
+  }
+  for (const foreign of [b, legacy]) {
+    const page = await request(bridge, "/v2/actions/pending?after=0", { headers: authorized(foreign) });
+    expect(await page.json()).toMatchObject({ actions: [] });
+    expect((await discard(foreign)).status).toBe(409);
+    const attempted = await request(bridge, "/v2/actions/race-action/ack", { method: "POST",
+      headers: authorized(foreign, { "content-type": "application/json" }), body: JSON.stringify(claim) });
+    expect(attempted.status).toBe(409);
+  }
+  expect(onClaimReference).not.toHaveBeenCalled(); expect(onDiscardReference).not.toHaveBeenCalled();
+  expect((await request(bridge, "/v2/actions/race-action/ack", { method: "POST",
+    headers: authorized(a, { "content-type": "application/json" }), body: JSON.stringify(claim) })).status).toBe(200);
+  expect(onClaimReference).toHaveBeenCalledOnce();
+  expect((await discard(b)).status).toBe(409);
+  expect((await discard(a)).status).toBe(200);
+  expect((await discard(b)).status).toBe(409);
+  expect(onDiscardReference).toHaveBeenCalledOnce();
+  const restoredCapture = { ...capture, actionId: "restored-action", referenceId: "restored-reference" };
+  bridge.restoreReferenceClaim(restoredCapture, { ...claim, referenceId: restoredCapture.referenceId });
+  const foreign = await request(bridge, "/v2/references/restored-reference/discard", { method: "POST",
+    headers: authorized(b, { "content-type": "application/json" }),
+    body: JSON.stringify({ annotationProtocolVersion: 2, type: "reference-discard", referenceId: restoredCapture.referenceId }) });
+  expect(foreign.status).toBe(409);
+});
+
+it("keeps capture routing on the latest attached instance when an older controller renews", async () => {
+  let timestamp = 1_000;
+  const bridge = await start({ now: () => timestamp });
+  async function controller(id: string) {
+    const response = await request(bridge, "/control/v1/handshake", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ lifecycleProtocolVersion: 3, clientId: `controller-${id}`, role: "controller", dshInstanceId: id, expectedBootId: bridge.identity.bootId }) });
+    expect(response.status).toBe(200);
+    const { token } = await response.json() as { token: string };
+    const leaseResponse = await request(bridge, "/control/v1/leases", { method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ lifecycleProtocolVersion: 3, expectedBootId: bridge.identity.bootId, ttlMs: 15_000,
+        browserOrigins: [DSH_ORIGIN], dshViewerUrl: `${DSH_ORIGIN}/?token=${id}` }) });
+    expect(leaseResponse.status).toBe(201);
+    return { token, lease: await leaseResponse.json() as { leaseId: string } };
+  }
+  const old = await controller("old"); timestamp += 100;
+  await controller("rc2"); timestamp += 100;
+  const renewed = await request(bridge, `/control/v1/leases/${old.lease.leaseId}`, { method: "PUT",
+    headers: { authorization: `Bearer ${old.token}`, "content-type": "application/json" },
+    body: JSON.stringify({ lifecycleProtocolVersion: 3, expectedBootId: bridge.identity.bootId, leaseId: old.lease.leaseId, ttlMs: 15_000,
+      browserOrigins: [DSH_ORIGIN], dshViewerUrl: `${DSH_ORIGIN}/?token=old` }) });
+  expect(renewed.status).toBe(200);
+  expect(bridge.activeDshViewerUrl()).toBe(`${DSH_ORIGIN}/?token=rc2`);
+  bridge.enqueue(raceCapture());
+  const response = await request(bridge, "/v2/handshake", { method: "POST", headers: { "content-type": "application/json", origin: DSH_ORIGIN },
+    body: JSON.stringify({ clientId: "rc2-web", dshInstanceId: "rc2" }) });
+  const { token } = await response.json() as { token: string };
+  const page = await request(bridge, "/v2/actions/pending?after=0", { headers: authorized(token) });
+  expect(await page.json()).toMatchObject({ actions: [{ message: { dshInstanceId: "rc2" } }] });
+});

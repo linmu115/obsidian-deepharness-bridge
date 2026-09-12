@@ -3,6 +3,7 @@ import type { DeepLinkAction } from "./protocol.ts";
 export const OBSIDIAN_DEEPHARNESS_ACTION = "deepharness";
 
 export interface DshLogicalLocation {
+  dshInstanceId?: string;
   logicalSessionId?: string;
   logicalAnchorId?: string;
   legacySessionId?: string;
@@ -17,6 +18,7 @@ export interface DshLogicalLocation {
 
 export function buildObsidianDshLink(location: DshLogicalLocation): string {
   const query = new URLSearchParams({
+    ...(location.dshInstanceId ? { dshInstanceId: location.dshInstanceId } : {}),
     ...(location.logicalSessionId ? { logicalSessionId: location.logicalSessionId } : {}),
     ...(location.logicalAnchorId ? { logicalAnchorId: location.logicalAnchorId } : {}),
     ...(location.legacySessionId ? { legacySessionId: location.legacySessionId } : {}),
@@ -45,6 +47,7 @@ export function obsidianProtocolUrl(params: Record<string, string>): string {
   const stickerId = read("sticker");
   const setId = read("setId");
   const referenceId = read("referenceId");
+  const dshInstanceId = read("dshInstanceId");
   const logicalSessionId = read("logicalSessionId") ?? read("logicalSession");
   const logicalAnchorId = read("logicalAnchorId") ?? read("logicalAnchor");
   const legacySessionId = read("legacySessionId") ?? read("legacySession");
@@ -52,6 +55,7 @@ export function obsidianProtocolUrl(params: Record<string, string>): string {
   return buildObsidianDshLink({
     sessionId: read("session") ?? "",
     anchorId: read("anchor") ?? "",
+    ...(dshInstanceId ? { dshInstanceId } : {}),
     ...(logicalSessionId ? { logicalSessionId } : {}),
     ...(logicalAnchorId ? { logicalAnchorId } : {}),
     ...(legacySessionId ? { legacySessionId } : {}),
@@ -80,8 +84,8 @@ export function parseDshLogicalLocation(value: string): DshLogicalLocation {
   }
 
   const allowed = url.protocol === "dsh:"
-    ? new Set(["anchor", "logicalSessionId", "logicalAnchorId", "legacySessionId", "legacyAnchorId", "logicalSession", "logicalAnchor", "legacySession", "legacyAnchor", "quoteHash", "setId", "referenceId"])
-    : new Set(["session", "anchor", "logicalSessionId", "logicalAnchorId", "legacySessionId", "legacyAnchorId", "logicalSession", "logicalAnchor", "legacySession", "legacyAnchor", "quoteHash", "sticker", "setId", "referenceId"]);
+    ? new Set(["dshInstanceId", "anchor", "logicalSessionId", "logicalAnchorId", "legacySessionId", "legacyAnchorId", "logicalSession", "logicalAnchor", "legacySession", "legacyAnchor", "quoteHash", "setId", "referenceId"])
+    : new Set(["dshInstanceId", "session", "anchor", "logicalSessionId", "logicalAnchorId", "legacySessionId", "legacyAnchorId", "logicalSession", "logicalAnchor", "legacySession", "legacyAnchor", "quoteHash", "sticker", "setId", "referenceId"]);
   const unknown = [...url.searchParams.keys()].find((key) => !allowed.has(key));
   if (unknown) throw new Error(`Unknown DSH link parameter: ${unknown}`);
   const anchorId = url.searchParams.get("anchor");
@@ -90,6 +94,7 @@ export function parseDshLogicalLocation(value: string): DshLogicalLocation {
   const stickerId = url.searchParams.get("sticker");
   const setId = url.searchParams.get("setId");
   const referenceId = url.searchParams.get("referenceId");
+  const dshInstanceId = url.searchParams.get("dshInstanceId");
   const logicalSessionId = url.searchParams.get("logicalSessionId") ?? url.searchParams.get("logicalSession");
   const logicalAnchorId = url.searchParams.get("logicalAnchorId") ?? url.searchParams.get("logicalAnchor");
   const legacySessionId = url.searchParams.get("legacySessionId") ?? url.searchParams.get("legacySession");
@@ -97,6 +102,7 @@ export function parseDshLogicalLocation(value: string): DshLogicalLocation {
   return {
     sessionId,
     anchorId,
+    ...(dshInstanceId ? { dshInstanceId } : {}),
     ...(logicalSessionId ? { logicalSessionId } : {}),
     ...(logicalAnchorId ? { logicalAnchorId } : {}),
     ...(legacySessionId ? { legacySessionId } : {}),
@@ -117,6 +123,7 @@ export function parseDshLogicalLink(
     protocolVersion: 1,
     type: "deep-link",
     actionId: createActionId(),
+    ...(location.dshInstanceId ? { dshInstanceId: location.dshInstanceId } : {}),
     ...(location.logicalSessionId ? { logicalSessionId: location.logicalSessionId } : {}),
     ...(location.logicalAnchorId ? { logicalAnchorId: location.logicalAnchorId } : {}),
     ...(location.legacySessionId ? { legacySessionId: location.legacySessionId } : {}),
