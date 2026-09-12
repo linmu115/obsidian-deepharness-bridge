@@ -42,11 +42,11 @@ async function handshake(bridge: RunningBridge, origin = DSH_ORIGIN): Promise<st
   return (await response.json() as { token: string }).token;
 }
 
-async function handshakeV2(bridge: RunningBridge, clientId = "dsh-web-v2", surfaceId?: string): Promise<string> {
+async function handshakeV2(bridge: RunningBridge, clientId = "dsh-web-v2", surfaceId?: string, dshInstanceId?: string): Promise<string> {
   const response = await request(bridge, "/v2/handshake", {
     method: "POST",
     headers: { "content-type": "application/json", origin: DSH_ORIGIN },
-    body: JSON.stringify({ clientId, ...(surfaceId === undefined ? {} : { surfaceId }) }),
+    body: JSON.stringify({ clientId, ...(surfaceId === undefined ? {} : { surfaceId }), ...(dshInstanceId === undefined ? {} : { dshInstanceId }) }),
   });
   expect(response.status).toBe(200);
   const body = await response.json() as { token: string; annotationProtocolVersion: number; capabilities: string[] };
@@ -861,10 +861,32 @@ it("keeps capture routing on the latest attached instance when an older controll
       browserOrigins: [DSH_ORIGIN], dshViewerUrl: `${DSH_ORIGIN}/?token=old` }) });
   expect(renewed.status).toBe(200);
   expect(bridge.activeDshViewerUrl()).toBe(`${DSH_ORIGIN}/?token=rc2`);
-  bridge.enqueue(raceCapture());
+  bridge.enqueue(bridge.prepareCapture(raceCapture()));
   const response = await request(bridge, "/v2/handshake", { method: "POST", headers: { "content-type": "application/json", origin: DSH_ORIGIN },
     body: JSON.stringify({ clientId: "rc2-web", dshInstanceId: "rc2" }) });
   const { token } = await response.json() as { token: string };
   const page = await request(bridge, "/v2/actions/pending?after=0", { headers: authorized(token) });
   expect(await page.json()).toMatchObject({ actions: [{ message: { dshInstanceId: "rc2" } }] });
+});
+
+it("keeps durable ownership after delivery receipts are evicted", async () => {
+  const discard = vi.fn(async () => {});
+  const bridge = await start({ referenceInstanceId: id => id === "race-reference" ? "owner" : undefined, onDiscardReference: discard });
+  bridge.restoreReferenceClaim(raceCapture(), { ...raceClaim, dshInstanceId: "owner" });
+  for (let index = 0; index < 2100; index++) bridge.restoreReferenceClaim({ ...raceCapture(), actionId: `action-${index}`, referenceId: `reference-${index}` },
+    { ...raceClaim, referenceId: `reference-${index}` });
+  expect(bridge.diagnostics().completedActions).toBeLessThanOrEqual(2048);
+  const other = await handshakeV2(bridge, "foreign", undefined, "foreign");
+  const response = await request(bridge, "/v2/references/race-reference/discard", { method: "POST",
+    headers: authorized(other, { "content-type": "application/json" }),
+    body: JSON.stringify({ annotationProtocolVersion: 2, type: "reference-discard", referenceId: "race-reference" }) });
+  expect(response.status).toBe(409); expect(discard).not.toHaveBeenCalled();
+});
+it("rejects a sticker target from another instance before any Vault callback", async () => {
+  const remove = vi.fn(async () => ({ notesChanged: 0, linksRemoved: 0 }));
+  const bridge = await start({ onDeleteStickerBacklinks: remove });
+  const token = await handshakeV2(bridge, "owner", undefined, "owner");
+  const response = await request(bridge, "/v1/sticker-backlinks/delete", { method: "POST", headers: authorized(token, { "content-type": "application/json" }),
+    body: JSON.stringify({ stickerId: SURFACE_A, sessionId: "same-session", anchorId: "same-anchor", quoteHash: "sha256:text", dshInstanceId: "foreign" }) });
+  expect(response.status).toBe(409); expect(remove).not.toHaveBeenCalled();
 });

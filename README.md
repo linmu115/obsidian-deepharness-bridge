@@ -1,6 +1,6 @@
 # Obsidian DeepHarness Bridge
 
-当前候选版本 **0.6.4-rc2.1** 针对 DSH **0.1.5-rc.2**。升级说明与验证范围见 CHANGELOG。
+当前候选版本 **0.6.4-rc2.2** 针对 DSH **0.1.5-rc.2**。升级说明与验证范围见 CHANGELOG。
 
 
 Obsidian 伴侣插件：管理本机 bridge、Vault 伴生 Markdown、选段引用和 DSH Web Viewer 回跳。

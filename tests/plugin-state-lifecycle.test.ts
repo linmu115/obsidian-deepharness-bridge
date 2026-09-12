@@ -41,6 +41,7 @@ interface Internals {
   bridge: RunningBridge | null;
   queueReference(selection: NoteSelection): Promise<void>;
   resolveDshViewerUrl(): Promise<string>;
+  referenceInstanceId(referenceId: string): Promise<string | undefined>;
   claimReference(claim: ReferenceClaimV2): Promise<void>;
   refreshReference(request: ReferenceRefreshRequestV2): Promise<ReferenceRefreshResultV2>;
   commitBacklink(commit: BacklinkCommitV2): Promise<unknown>;
@@ -70,7 +71,7 @@ function bridgeStub(): RunningBridge {
     origin: "http://127.0.0.1:18473", tokenExpiresAt: null,
     identity: { instanceId: "synthetic", bootId: crypto.randomUUID(), bridgeVersion: "test", startedAt: 1 },
     status: vi.fn(() => ({ lifecycleProtocolVersion: 3, instanceId: "synthetic", bootId: crypto.randomUUID(), bridgeVersion: "test", startedAt: 1, state: "READY", stateChangedAt: 1, activeLeaseCount: 0, inFlightRequestCount: 0 } as const)),
-    activeDshViewerUrl: vi.fn(), enqueue: vi.fn(() => 1), cancelReference: vi.fn(() => 1),
+    activeDshViewerUrl: vi.fn(), prepareCapture: vi.fn(capture => capture), enqueue: vi.fn(() => 1), cancelReference: vi.fn(() => 1),
     restoreReferenceClaim: vi.fn(), diagnostics: vi.fn(() => ({ activeActions: 0, completedActions: 0, connectedClients: 0 })),
     close: vi.fn(async () => undefined),
   };
@@ -425,4 +426,52 @@ describe("plugin state persistence and lifecycle", () => {
     release.resolve(); await Promise.all([discard, stopping, loading]);
     expect(replacement.loadData).toHaveBeenCalledOnce(); expect(replacement.bridgeStatus).toContain("等待 DSH");
   });
+});
+
+it("persists capture routing before delivery and preserves it across restart and a new viewer", async () => {
+  const raw = claimed("durable-route").capture;
+  const selection = { ...raw, requiresBlockIdWrite: false, blockIdOwnership: "pre-existing" as const };
+  const first = fixture();
+  vi.spyOn(first.internals, "resolveDshViewerUrl").mockResolvedValue("http://127.0.0.1:3080/");
+  first.internals.bridge!.prepareCapture = capture => ({ ...capture, dshInstanceId: "owner-a" });
+  vi.mocked(first.internals.bridge!.enqueue).mockImplementation(capture => {
+    expect(vi.mocked(first.plugin.saveData).mock.calls.at(-1)?.[0]).toMatchObject({ pendingReferences: [{ capture: { dshInstanceId: "owner-a" } }] });
+    expect(capture).toMatchObject({ dshInstanceId: "owner-a" }); return 1;
+  });
+  await first.internals.queueReference(selection);
+  const second = fixture(structuredClone(first.internals.data.pendingReferences));
+  vi.spyOn(second.internals, "resolveDshViewerUrl").mockResolvedValue("http://127.0.0.1:3081/");
+  second.internals.bridge!.prepareCapture = capture => ({ ...capture, dshInstanceId: "owner-b" });
+  await second.internals.queueReference(selection);
+  expect(second.internals.data.pendingReferences[0]).toMatchObject({ capture: { dshInstanceId: "owner-a" } });
+  expect(second.internals.bridge!.enqueue).toHaveBeenCalledWith(expect.objectContaining({ dshInstanceId: "owner-a" }));
+});
+
+it.each([false, true])("deletes a scoped reference using the real authenticated legacy Core DTO (orphan=%s)", async orphan => {
+  const record = claimed("scoped-delete"); record.claim.dshInstanceId = "owner";
+  const { internals, files } = fixture([record]);
+  await internals.commitBacklink({ annotationProtocolVersion: 2, type: "backlink-commit", referenceId: record.claim.referenceId,
+    profileId: "web", sessionId: "session", setId: record.claim.setId, userMessageId: "message", userAnchorId: "anchor", userTextHash: "sha256:text" });
+  expect(files.get("scoped-delete.md")).toContain('"dshInstanceId":"owner"');
+  if (orphan) internals.data = { ...internals.data, pendingReferences: [], backlinkReceipts: [] };
+  const actual = await vi.importActual<typeof import("../src/bridge/server.ts")>("../src/bridge/server.ts");
+  const server = await actual.startBridgeServer({ port: 0, referenceInstanceId: id => internals.referenceInstanceId(id),
+    onDeleteCommittedReference: commit => internals.deleteCommittedReference(commit) });
+  async function remove(instance: string) {
+    const handshake = await fetch(`${server.origin}/v2/handshake`, { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ clientId: `host-${instance}`, dshInstanceId: instance }) });
+    const { token } = await handshake.json() as { token: string };
+    return fetch(`${server.origin}/v2/references/${record.claim.referenceId}/delete-commit`, { method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+      body: JSON.stringify({ annotationProtocolVersion: 2, type: "reference-delete-commit", referenceId: record.claim.referenceId,
+        profileId: "web", sessionId: "session", setId: record.claim.setId, deletedAt: 10 }) });
+  }
+  try {
+    // No queue receipt exists here: persistent claim/marker must authorize this operation.
+    expect((await remove("foreign")).status).toBe(409);
+    expect(files.get("scoped-delete.md")).toContain("<!-- dsh-reference:");
+    const response = await remove("owner"); expect(response.status, await response.text()).toBe(200);
+    expect(files.get("scoped-delete.md")).not.toContain("<!-- dsh-reference:");
+    expect(files.get("scoped-delete.md")).toContain("quote");
+  } finally { await server.close(); }
 });

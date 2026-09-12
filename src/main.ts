@@ -518,8 +518,12 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
       rollbackBlockId: _rollbackBlockId,
       ...rawCapture
     } = selection;
-    const capture = ObsidianReferenceCaptureV2Schema.parse(rawCapture);
-    const existing = this.data.pendingReferences.find((record) => captureOf(record)?.referenceId === capture.referenceId);
+    const raw = ObsidianReferenceCaptureV2Schema.parse(rawCapture);
+    const existing = this.data.pendingReferences.find(record => captureOf(record)?.referenceId === raw.referenceId);
+    const previousCapture = existing === undefined ? undefined : captureOf(existing);
+    const capture = previousCapture !== undefined
+      ? ObsidianReferenceCaptureV2Schema.parse({ ...raw, ...(raw.dshInstanceId === undefined && previousCapture.dshInstanceId !== undefined ? { dshInstanceId: previousCapture.dshInstanceId } : {}) })
+      : this.bridge?.prepareCapture?.(raw) ?? raw;
     if (existing !== undefined) {
       if (canonicalSha256(captureOf(existing)) !== canonicalSha256(capture)) {
         throw codedError("IDEMPOTENCY_CONFLICT", `Reference ID already exists: ${capture.referenceId}`);
@@ -554,6 +558,18 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
       throw codedError("NOTE_NOT_FOUND", `Reference is unavailable: ${referenceId}`);
     }
     return { index, record };
+  }
+
+  private async referenceInstanceId(referenceId: string): Promise<string | undefined> {
+    const record = this.data.pendingReferences.find(candidate => captureOf(candidate)?.referenceId === referenceId);
+    const claim = record?.state === "claimed" ? record.claim : undefined;
+    const capture = record === undefined ? undefined : captureOf(record);
+    const request = this.data.referenceDeleteRequests.find(candidate => candidate.referenceId === referenceId);
+    const instance = claim?.dshInstanceId ?? capture?.dshInstanceId ?? request?.dshInstanceId;
+    if (instance !== undefined) return instance;
+    if (record !== undefined || request !== undefined) return undefined;
+    const receipt = this.data.backlinkReceipts.find(candidate => candidate.referenceId === referenceId);
+    return (await findCommittedReferenceNavigationTarget(this.vaultAdapter(), referenceId, receipt?.notePath))?.dshInstanceId;
   }
 
   private async claimReference(claim: ReferenceClaimV2): Promise<void> {
@@ -889,6 +905,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
         allowedDshOrigins: [this.settings.dshOrigin],
         instanceId: this.data.vaultId,
         bridgeVersion: this.manifest.version,
+        referenceInstanceId: referenceId => this.referenceInstanceId(referenceId),
         onClaimReference: (claim) => this.claimReference(claim),
         onRefreshReference: (request) => this.refreshReference(request),
         onDiscardReference: async (request: ReferenceDiscardV2) => { await this.discardReference(request.referenceId); },

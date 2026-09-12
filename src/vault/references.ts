@@ -226,7 +226,7 @@ function findV2ReferenceBlock(
 
 function validateDeleteRelation(metadata: ReferenceMetadataV2, commit: ReferenceDeleteCommitV2): void {
   if (
-    metadata.setId !== commit.setId || metadata.profileId !== commit.profileId
+    metadata.dshInstanceId !== commit.dshInstanceId || metadata.setId !== commit.setId || metadata.profileId !== commit.profileId
     || metadata.sessionId !== commit.sessionId
   ) throw new ReferenceDocumentError("IDEMPOTENCY_CONFLICT", "The committed reference block belongs to a different DSH relation");
 }
