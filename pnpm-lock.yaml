@@ -455,7 +455,7 @@ packages:
     engines: {node: '>=8'}
 
   dsh-annotation-core@file:C:/Users/19717/OneDrive/文档/ChatGPT/dsh/.artifacts/rc2-profile-candidate/dsh-annotation-core-0.3.11-rc2.2.tgz:
-    resolution: {integrity: sha512-fY6hQU7bA5fMEfB5dpcYxDFoks3WSTMhD4OO8gH2I0cpimQbz6Zgo7ex8I8ptnRIiYCQ/+84QlsdhyKHM17znQ==, tarball: file:C:/Users/19717/OneDrive/文档/ChatGPT/dsh/.artifacts/rc2-profile-candidate/dsh-annotation-core-0.3.11-rc2.2.tgz}
+    resolution: {integrity: sha512-otO0+pwxn0QB15riZzbA/uqExdHbj2M/yYhTz40ipkyx/CdVoSAYBVE7xjbWwcyHnowGIQ+4TZdm6cg6o07UtQ==, tarball: file:C:/Users/19717/OneDrive/文档/ChatGPT/dsh/.artifacts/rc2-profile-candidate/dsh-annotation-core-0.3.11-rc2.2.tgz}
     version: 0.3.11-rc2.2
     engines: {node: '>=20'}
     peerDependencies:
@@ -507,7 +507,7 @@ packages:
         optional: true
 
   dsh-obsidian-bridge-protocol@file:C:/Users/19717/OneDrive/文档/ChatGPT/dsh/.artifacts/rc2-profile-candidate/dsh-obsidian-bridge-protocol-0.3.3-rc2.1.tgz:
-    resolution: {integrity: sha512-VPp9Phh621Gf1yMIuv3oTdzqLHibWyEXH/lNG4PV77LMgyAkkbBmJnR/kpDx+pFjNEYeg4T8GzszrpSrNeBO4Q==, tarball: file:C:/Users/19717/OneDrive/文档/ChatGPT/dsh/.artifacts/rc2-profile-candidate/dsh-obsidian-bridge-protocol-0.3.3-rc2.1.tgz}
+    resolution: {integrity: sha512-N4SlrVPUAGJyK1pK3RK1CbpSFSYH43jN2mYid3f3Wd1OerYWWA0t0R44HoQvs/z3iR9Ged4cREYnNzlEt3C2Bg==, tarball: file:C:/Users/19717/OneDrive/文档/ChatGPT/dsh/.artifacts/rc2-profile-candidate/dsh-obsidian-bridge-protocol-0.3.3-rc2.1.tgz}
     version: 0.3.3-rc2.1
 
   dts-resolver@3.0.0:
