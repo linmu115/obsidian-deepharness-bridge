@@ -13,31 +13,31 @@ export interface StickerBacklinkVault {
 
 const MANAGED_BLOCK = /(?:^|(?<=\n))<!-- dsh-sticker-backlink:(\{[^\r\n]*\}) -->\r?\n[\s\S]*?\r?\n<!-- \/dsh-sticker-backlink -->(?:\r?\n|$)/g;
 
-function stickerIdInLogicalLink(line: string): string | undefined {
+type StickerIdentity = Pick<StickerBacklinkTarget, "stickerId" | "dshInstanceId">;
+
+function matchesStickerIdentity(source: StickerIdentity, target: StickerBacklinkTarget): boolean {
+  return source.stickerId === target.stickerId
+    && (source.dshInstanceId === undefined || source.dshInstanceId === target.dshInstanceId);
+}
+
+function logicalStickerTargets(line: string): StickerIdentity[] {
+  const targets: StickerIdentity[] = [];
   for (const match of line.matchAll(/obsidian:\/\/deepharness\?[^\s)>\]]+/g)) {
     try {
-      const stickerId = new URL(match[0]).searchParams.get("sticker")?.trim();
-      if (stickerId) return stickerId;
+      const query = new URL(match[0]).searchParams;
+      const stickerId = query.get("sticker")?.trim();
+      const dshInstanceId = query.get("dshInstanceId");
+      if (stickerId) targets.push({ stickerId, ...(dshInstanceId === null ? {} : { dshInstanceId }) });
     } catch {
       // Ignore malformed user-authored links.
     }
   }
-  return undefined;
+  return targets;
 }
 
-function removeManagedBlocks(source: string, target: StickerBacklinkTarget): { source: string; removed: number } {
-  let removed = 0;
-  const output = source.replace(MANAGED_BLOCK, (block, metadataText: string) => {
-    try {
-      const metadata = stickerBacklinkTargetSchema.parse(JSON.parse(metadataText));
-      if (metadata.stickerId !== target.stickerId) return block;
-      removed += 1;
-      return "";
-    } catch {
-      return block;
-    }
-  });
-  return { source: output, removed };
+function ownsGeneratedLinks(lines: readonly string[], target: StickerBacklinkTarget): boolean {
+  const links = lines.flatMap(logicalStickerTargets);
+  return links.length > 0 && links.every(link => matchesStickerIdentity(link, target));
 }
 
 function lineBody(line: string): string {
@@ -49,9 +49,9 @@ function isLegacyWikiLine(line: string, target: StickerBacklinkTarget): boolean 
   return lineBody(line).trim() === `[[DeepHarness/Sessions/${encodeURIComponent(target.sessionId)}#^${blockId}|贴纸来源]]`;
 }
 
-function isGeneratedLogicalLinkLine(line: string, stickerId: string): boolean {
+function isGeneratedLogicalLinkLine(line: string, target: StickerBacklinkTarget): boolean {
   const trimmed = lineBody(line).trim();
-  if (stickerIdInLogicalLink(trimmed) !== stickerId) return false;
+  if (!ownsGeneratedLinks([trimmed], target)) return false;
   return /^\[回到 DSH(?::|：)/.test(trimmed) || /^>\s*\[回到 DSH(?::|：)/.test(trimmed);
 }
 
@@ -65,13 +65,14 @@ function removeLegacyGeneratedLinks(source: string, target: StickerBacklinkTarge
       let end = index + 1;
       while (end < lines.length && /^>/.test(lineBody(lines[end]!).trim())) end += 1;
       const block = lines.slice(index, end);
-      if (block.some((candidate) => stickerIdInLogicalLink(candidate) === target.stickerId)) {
+      if (ownsGeneratedLinks(block, target)) {
         removed += 1;
-        index = end;
-        continue;
-      }
+      } else output.push(...block);
+      // A protected callout is indivisible, just like a protected managed block.
+      index = end;
+      continue;
     }
-    if (isGeneratedLogicalLinkLine(line, target.stickerId)) {
+    if (isGeneratedLogicalLinkLine(line, target)) {
       if (output.length > 0 && isLegacyWikiLine(output.at(-1)!, target)) output.pop();
       removed += 1;
       index += 1;
@@ -88,9 +89,28 @@ export function removeStickerBacklinksFromMarkdown(
   value: StickerBacklinkTarget,
 ): { source: string; linksRemoved: number } {
   const target = stickerBacklinkTargetSchema.parse(value);
-  const managed = removeManagedBlocks(source, target);
-  const legacy = removeLegacyGeneratedLinks(managed.source, target);
-  return { source: legacy.source, linksRemoved: managed.removed + legacy.removed };
+  const output: string[] = [];
+  let linksRemoved = 0;
+  let offset = 0;
+  const appendLegacy = (part: string) => {
+    const legacy = removeLegacyGeneratedLinks(part, target);
+    output.push(legacy.source);
+    linksRemoved += legacy.removed;
+  };
+  for (const match of source.matchAll(MANAGED_BLOCK)) {
+    appendLegacy(source.slice(offset, match.index));
+    let owned = false;
+    try {
+      owned = matchesStickerIdentity(stickerBacklinkTargetSchema.parse(JSON.parse(match[1]!)), target);
+    } catch { /* Unreadable metadata cannot authorize deletion. */ }
+    if (owned) linksRemoved += 1;
+    else output.push(match[0]);
+    // Never feed a retained block through legacy cleanup: its interior may
+    // contain old unscoped generated links, but the outer owner is authoritative.
+    offset = match.index + match[0].length;
+  }
+  appendLegacy(source.slice(offset));
+  return { source: output.join(""), linksRemoved };
 }
 
 export async function deleteStickerBacklinkFromNote(

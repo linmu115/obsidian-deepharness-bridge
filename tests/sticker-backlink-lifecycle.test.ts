@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { mkdtemp, readFile, rm, rmdir, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   deleteStickerBacklinkFromNote,
@@ -15,6 +18,54 @@ const target = {
 };
 
 describe("sticker backlink lifecycle", () => {
+  it.each([undefined, "instance-a", "instance-b"])("deletes only permitted blocks from actual Markdown files (scope=%s)", async (dshInstanceId) => {
+    const wiki = "[[DeepHarness/Sessions/session-demo#^dsh-sticker-9bb3a80e|贴纸来源]]";
+    const generated = (scope?: string) => `[回到 DSH：会话](obsidian://deepharness?session=session-demo&anchor=assistant-9&sticker=${target.stickerId}${scope === undefined ? "" : `&dshInstanceId=${scope}`})`;
+    const managed = (scope?: string) => [
+      `<!-- dsh-sticker-backlink:${JSON.stringify({ ...target, ...(scope === undefined ? {} : { dshInstanceId: scope }) })} -->`,
+      "中文原文  \t", wiki, generated(), "> [!dsh-reference]", `> ${generated()}`, "> 引用正文  ",
+      "<!-- /dsh-sticker-backlink -->", "",
+    ].join("\r\n");
+    const a = managed("instance-a"), b = managed("instance-b");
+    const foreign = dshInstanceId === "instance-a" ? "instance-b" : "instance-a";
+    const protectedLegacy = [wiki, generated(foreign), "> [!dsh-reference]", `> ${generated(foreign)}`, "> 保留此行  \t", ""].join("\r\n");
+    const tail = protectedLegacy + "结束\n";
+    const original = "开始\r\n" + a + "中间\r\n" + b + managed() + wiki + "\n" + generated() + "\n" + tail;
+    const expected = "开始\r\n" + (dshInstanceId === "instance-a" ? "" : a) + "中间\r\n" + (dshInstanceId === "instance-b" ? "" : b) + tail;
+    const scratch = await mkdtemp(join(tmpdir(), "sticker-f4-"));
+    const paths = ["mixed.md", "protected.md"];
+    const protectedBytes = Buffer.from(managed(foreign), "utf8");
+    try {
+      await writeFile(join(scratch, paths[0]!), original);
+      await writeFile(join(scratch, paths[1]!), protectedBytes);
+      const vault: StickerBacklinkVault = {
+        listMarkdownPaths: async () => paths,
+        read: path => readFile(join(scratch, path), "utf8"),
+        process: async (path, update) => {
+          const next = update(await readFile(join(scratch, path), "utf8"));
+          await writeFile(join(scratch, path), next);
+          return next;
+        },
+      };
+      const requested = { ...target, ...(dshInstanceId === undefined ? {} : { dshInstanceId }) };
+      await expect(deleteStickerBacklinks(vault, requested)).resolves.toEqual({ notesChanged: 1, linksRemoved: dshInstanceId === undefined ? 2 : 3 });
+      expect(await readFile(join(scratch, paths[0]!))).toEqual(Buffer.from(expected, "utf8"));
+      expect(await readFile(join(scratch, paths[1]!))).toEqual(protectedBytes);
+      await expect(deleteStickerBacklinks(vault, requested)).resolves.toEqual({ notesChanged: 0, linksRemoved: 0 });
+      expect(await readFile(join(scratch, paths[0]!))).toEqual(Buffer.from(expected, "utf8"));
+    } finally {
+      for (const path of paths) await rm(join(scratch, path), { force: true });
+      await rmdir(scratch);
+    }
+  });
+
+  it("preserves an unauthorized or invalid managed block as an opaque unit", () => {
+    const link = `[回到 DSH：会话](obsidian://deepharness?session=session-demo&sticker=${target.stickerId})\n`;
+    const source = `<!-- dsh-sticker-backlink:${JSON.stringify({ ...target, dshInstanceId: "other" })} -->\n${link}<!-- /dsh-sticker-backlink -->\n`
+      + `<!-- dsh-sticker-backlink:{invalid} -->\n${link}<!-- /dsh-sticker-backlink -->\n`;
+    expect(removeStickerBacklinksFromMarkdown(source, target)).toEqual({ source, linksRemoved: 0 });
+  });
+
   it.each([false, true])("preserves edits between candidate read and atomic unlink (global=%s)", async (global) => {
     const original = `before\n<!-- dsh-sticker-backlink:${JSON.stringify(target)} -->\nlink\n<!-- /dsh-sticker-backlink -->\nafter\n`;
     let current = original;
