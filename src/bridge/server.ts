@@ -85,6 +85,8 @@ export interface BridgeServerOptions {
   now?: () => number;
   instanceId?: string;
   bridgeVersion?: string;
+  /** Stable identity of the Web Viewer opened by this Obsidian vault. */
+  referenceSurfaceId?: string;
   onOpenNote?: (action: OpenNoteAction) => Promise<void>;
   onReadSessionNote?: (sessionId: string) => Promise<SessionNoteDocument | null>;
   onSaveSessionNote?: (request: SaveSessionNoteRequest) => Promise<{ revision: string }>;
@@ -133,8 +135,13 @@ const BRIDGE_CAPABILITIES = [
   "sticker-backlink-delete-v1",
 ] as const;
 
-function visibleTo(authentication: TokenRecord, message: QueuedBridgeMessage): boolean {
+function captureReceiver(authentication: TokenRecord, referenceSurfaceId: string | undefined): boolean {
+  return referenceSurfaceId !== undefined && authentication.role === "surface" && authentication.surfaceId === referenceSurfaceId;
+}
+
+function visibleTo(authentication: TokenRecord, message: QueuedBridgeMessage, referenceSurfaceId?: string): boolean {
   if ("dshInstanceId" in message && message.dshInstanceId !== undefined && message.dshInstanceId !== authentication.dshInstanceId) return false;
+  if (message.type === "reference-capture") return captureReceiver(authentication, referenceSurfaceId);
   return message.type !== "deep-link"
     || message.targetSurfaceId === undefined
     || message.targetSurfaceId === authentication.surfaceId;
@@ -520,7 +527,7 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
         json(response, 200, queue.pending(
           authentication.clientId,
           after,
-          (message) => message.type === "deep-link" && visibleTo(authentication, message),
+          (message) => message.type === "deep-link" && visibleTo(authentication, message, options.referenceSurfaceId),
         ), allowedOrigin);
         return;
       }
@@ -532,7 +539,7 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
         if (!Number.isInteger(after) || after < 0) throw new HttpError(400, "Action cursor must be a non-negative integer");
         json(response, 200, {
           queueId,
-          ...queue.pending(authentication.clientId, after, (message) => visibleTo(authentication, message)),
+          ...queue.pending(authentication.clientId, after, (message) => visibleTo(authentication, message, options.referenceSurfaceId)),
         }, allowedOrigin);
         return;
       }
@@ -541,9 +548,12 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
       if (request.method === "POST" && v2AckMatch) {
         const actionId = decodeURIComponent(v2AckMatch[1] ?? "");
         const claim = ReferenceClaimV2Schema.parse(await readJsonBody(request, maxBodyBytes));
+        // Also reject stale/in-flight clients and replays after the queue entry
+        // has completed; filtering the pending list alone is not sufficient.
+        if (!captureReceiver(authentication, options.referenceSurfaceId)) throw new HttpError(409, "只有 Obsidian 内嵌页可以领取引用", "IDEMPOTENCY_CONFLICT");
         if (claim.dshInstanceId !== authentication.dshInstanceId) throw new HttpError(409, "Reference claim belongs to a different DSH instance", "IDEMPOTENCY_CONFLICT");
         const action = queue.message(actionId);
-        if (action !== undefined && !visibleTo(authentication, action)) throw new HttpError(409, "Reference action targets a different DSH instance", "IDEMPOTENCY_CONFLICT");
+        if (action !== undefined && !visibleTo(authentication, action, options.referenceSurfaceId)) throw new HttpError(409, "Reference action targets a different DSH instance", "IDEMPOTENCY_CONFLICT");
         await referenceWork.run(claim.referenceId, async () => {
           const result = queue.checkClaim(actionId, claim);
           if (result === "missing" || result === "cancelled") throw new HttpError(404, "Reference action is no longer available", "NOTE_NOT_FOUND");

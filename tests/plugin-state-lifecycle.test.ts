@@ -280,6 +280,7 @@ describe("plugin state persistence and lifecycle", () => {
     vi.mocked(startBridgeServer).mockResolvedValueOnce(bridge);
     vi.spyOn(replacement.internals, "resolveDshViewerUrl").mockRejectedValue(new Error("still offline"));
     await replacement.plugin.retryPendingWork();
+    expect(startBridgeServer).toHaveBeenLastCalledWith(expect.objectContaining({ referenceSurfaceId: settings.webViewerSurfaceId }));
     expect(restored.pending("surface", 0).actions.map(({ message }) => message.actionId)).toEqual(["action-a"]);
   });
 

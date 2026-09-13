@@ -18,6 +18,7 @@ async function start(options: Parameters<typeof startBridgeServer>[0] = {}): Pro
   const bridge = await startBridgeServer({
     port: 0,
     allowedDshOrigins: [DSH_ORIGIN],
+    referenceSurfaceId: SURFACE_A,
     ...options,
   });
   openBridges.push(bridge);
@@ -42,11 +43,11 @@ async function handshake(bridge: RunningBridge, origin = DSH_ORIGIN): Promise<st
   return (await response.json() as { token: string }).token;
 }
 
-async function handshakeV2(bridge: RunningBridge, clientId = "dsh-web-v2", surfaceId?: string, dshInstanceId?: string): Promise<string> {
+async function handshakeV2(bridge: RunningBridge, clientId = "dsh-web-v2", surfaceId: string | null | undefined = SURFACE_A, dshInstanceId?: string): Promise<string> {
   const response = await request(bridge, "/v2/handshake", {
     method: "POST",
     headers: { "content-type": "application/json", origin: DSH_ORIGIN },
-    body: JSON.stringify({ clientId, ...(surfaceId === undefined ? {} : { surfaceId }), ...(dshInstanceId === undefined ? {} : { dshInstanceId }) }),
+    body: JSON.stringify({ clientId, ...(surfaceId == null ? {} : { surfaceId }), ...(dshInstanceId === undefined ? {} : { dshInstanceId }) }),
   });
   expect(response.status).toBe(200);
   const body = await response.json() as { token: string; annotationProtocolVersion: number; capabilities: string[] };
@@ -469,7 +470,7 @@ describe("loopback bridge server", () => {
     const bridge = await start();
     const targeted = { ...firstAction, targetSurfaceId: SURFACE_A };
     bridge.enqueue(targeted);
-    const edgeToken = await handshakeV2(bridge, "dsh-edge");
+    const edgeToken = await handshakeV2(bridge, "dsh-edge", null);
     const otherViewerToken = await handshakeV2(bridge, "dsh-other-viewer", SURFACE_B);
     const obsidianViewerToken = await handshakeV2(bridge, "dsh-obsidian-viewer", SURFACE_A);
 
@@ -797,7 +798,7 @@ it("isolates two web instances through capture, claim, deletion and a restored c
   async function instanceToken(instance: string) {
     const response = await request(bridge, "/v2/handshake", {
       method: "POST", headers: { "content-type": "application/json", origin: DSH_ORIGIN },
-      body: JSON.stringify({ clientId: `web-${instance}`, dshInstanceId: instance }),
+      body: JSON.stringify({ clientId: `web-${instance}`, dshInstanceId: instance, surfaceId: SURFACE_A }),
     });
     expect(response.status).toBe(200);
     const body = await response.json() as { token: string; dshInstanceId: string; capabilities: string[] };
@@ -863,7 +864,7 @@ it("keeps capture routing on the latest attached instance when an older controll
   expect(bridge.activeDshViewerUrl()).toBe(`${DSH_ORIGIN}/?token=rc2`);
   bridge.enqueue(bridge.prepareCapture(raceCapture()));
   const response = await request(bridge, "/v2/handshake", { method: "POST", headers: { "content-type": "application/json", origin: DSH_ORIGIN },
-    body: JSON.stringify({ clientId: "rc2-web", dshInstanceId: "rc2" }) });
+    body: JSON.stringify({ clientId: "rc2-web", dshInstanceId: "rc2", surfaceId: SURFACE_A }) });
   const { token } = await response.json() as { token: string };
   const page = await request(bridge, "/v2/actions/pending?after=0", { headers: authorized(token) });
   expect(await page.json()).toMatchObject({ actions: [{ message: { dshInstanceId: "rc2" } }] });

@@ -905,6 +905,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
         allowedDshOrigins: [this.settings.dshOrigin],
         instanceId: this.data.vaultId,
         bridgeVersion: this.manifest.version,
+        referenceSurfaceId: this.settings.webViewerSurfaceId,
         referenceInstanceId: referenceId => this.referenceInstanceId(referenceId),
         onClaimReference: (claim) => this.claimReference(claim),
         onRefreshReference: (request) => this.refreshReference(request),
