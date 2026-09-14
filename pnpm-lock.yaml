@@ -458,7 +458,7 @@ packages:
     engines: {node: '>=8'}
 
   dsh-annotation-core@file:../../../artifacts/knowledge-network-rc2-20260914/dsh-annotation-core-0.3.12-rc2.6.tgz:
-    resolution: {integrity: sha512-ektEzE6VO31Vju/skd2pYwISnCQhInWP22qRkrEB/ngrOg2XqE0Z60nkuElPCvCczWtCleKgVgbp0O/m/ClPTg==, tarball: file:../../../artifacts/knowledge-network-rc2-20260914/dsh-annotation-core-0.3.12-rc2.6.tgz}
+    resolution: {integrity: sha512-1RazTF/cvSYKUtPxjtjHbj09Iirn71ByzFlE67W3VmZw4Zc6UOvclXHl/Q9XrVI4aTrKz08rue+IvEhOfm8g5w==, tarball: file:../../../artifacts/knowledge-network-rc2-20260914/dsh-annotation-core-0.3.12-rc2.6.tgz}
     version: 0.3.12-rc2.6
     engines: {node: '>=20'}
     peerDependencies:
