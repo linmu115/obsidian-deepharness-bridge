@@ -458,7 +458,7 @@ packages:
     engines: {node: '>=8'}
 
   dsh-annotation-core@file:../../../artifacts/system-fixes-20260914/dsh-annotation-core-0.3.12-rc2.7.tgz:
-    resolution: {integrity: sha512-mT1k8wtvwRsgSqokGftuDmFgQSa6NikV6S5Q1AkgB1wp4UwVIntQkR06wc/siTJIy1MR3mbaCT3Mb3RV9CYoSA==, tarball: file:../../../artifacts/system-fixes-20260914/dsh-annotation-core-0.3.12-rc2.7.tgz}
+    resolution: {integrity: sha512-nUg2+vHttilWn6f40ADnpEsD2Eun7wYzaqjW/UN4XpytejFQ7UvNSasVEmMpWX56TKwC81NdLg33CMArMN7WHg==, tarball: file:../../../artifacts/system-fixes-20260914/dsh-annotation-core-0.3.12-rc2.7.tgz}
     version: 0.3.12-rc2.7
     engines: {node: '>=20'}
     peerDependencies:

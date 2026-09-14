@@ -7,6 +7,7 @@ import { selectionStickerIntent, writeSelectionSticker } from './vault/selection
 import { knowledgeFile } from './vault/knowledge-file.ts';
 import { vaultNoteIdentity } from './vault/knowledge-identity.ts';
 import { knowledgeLinkUpdate } from './vault/knowledge-link-update.ts';
+import { LinkedReferenceService } from './vault/linked-reference.ts';
 import { requestViewerKnowledge } from './webviewer/knowledge-client.ts';
 import type { KnowledgeRequest } from './webviewer/knowledge-client.ts';
 import { KnowledgeSessionPicker } from './ui/knowledge-picker.ts';
@@ -110,6 +111,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
   private shutdownPromise: Promise<void> | undefined;
   private adapter: ObsidianVaultAdapter | undefined;
   private knowledge: VaultKnowledgeStore | undefined;
+  private linkedReferences: LinkedReferenceService | undefined;
   private knowledgeSync: Promise<void> | undefined;
   private readonly knowledgeWrites = new SerialWork();
   private knowledgeSyncTimer: ReturnType<typeof setTimeout> | undefined;
@@ -944,6 +946,27 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
       openNote: async (path, blockId) => { await this.app.workspace.openLinkText(path + (blockId ? '#^' + blockId : ''), '', false); },
     });
     await this.knowledge.load();
+    this.linkedReferences = new LinkedReferenceService({
+      getLink: (objectId, instanceId) => this.knowledge!.dispatch('link-get', { objectId }, instanceId) as Promise<LocalKnowledgeLink>,
+      resolveNote: (noteId, instanceId) => this.knowledge!.dispatch('note-resolve', { noteId }, instanceId) as Promise<NoteIdentity>,
+      resolveTarget: async logicalSessionId => {
+        const request = await this.knowledgeClient();
+        const status = await request<{ instanceId:string; profileId:string }>('status');
+        const target = await request<{ nativeSessionId:string }>('resolve', { logicalSessionId });
+        return { ...status, ...target };
+      },
+      read: path => vault.read(path), process: (path, update) => vault.process(path, update),
+      saveClaimed: (capture, claim) => this.mutate(async () => {
+        const old = this.data.pendingReferences.find(r => captureOf(r)?.referenceId === capture.referenceId);
+        if (old) {
+          if (old.state !== 'claimed' || canonicalSha256(old.claim) !== canonicalSha256(claim)) throw new Error('引用已经绑定其他目标');
+          return;
+        }
+        const before = this.data;
+        this.data = { ...this.data, pendingReferences:[...this.data.pendingReferences, { state:'claimed',capture,claim,blockIdOwnership:'pre-existing' }] };
+        try { await this.persist(); } catch(e) { this.data=before; throw e; }
+      }),
+    });
     this.addCommand({ id: 'knowledge-link-session', name: '将当前笔记关联到会话', callback: () => {
       const file = this.app.workspace.getActiveFile();
       if (file?.extension === 'md') this.openKnowledgePicker(file.path); else new Notice('请先打开笔记');
@@ -1129,6 +1152,10 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
           return this.knowledge.guardedLegacySave(document.sessionId, () => saveSessionNote(vault, document, expectedRevision));
         },
         onKnowledge: (operation, input, instanceId) => {
+          if (operation === 'link-reference-prepare' || operation === 'link-reference-commit') {
+            if (!this.linkedReferences) throw new Error('关联引用尚未就绪');
+            return this.knowledgeWrites.run(() => this.linkedReferences!.request(operation, input, instanceId));
+          }
           if (!this.knowledge) throw new Error('知识登记未就绪');
           if (['link-commit', 'link-delete', 'link-register'].includes(operation)) return this.knowledgeWrites.run(() => this.knowledge!.dispatch(operation, input, instanceId)).finally(() => this.scheduleKnowledgeSync());
           return this.knowledge.dispatch(operation, input, instanceId);
