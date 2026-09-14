@@ -35,6 +35,11 @@ it('persists a selected excerpt intent, resumes the same real session sticker, a
   expect(object!.content.body).toMatchObject({ kind: 'session', logicalSessionId: 'real-logical', note: { blockId: 'block' }, noteSelection: { selectedText: '有意义的选段' } });
   expect(markdown).toContain('obsidian://deepharness-session?instance=instance&session=real-logical');
   expect(markdown).toContain('whole-note-private-material');
+  const link = await restarted.dispatch('link-get', { objectId: intent.objectId }, 'instance') as Record<string, unknown>;
+  await restarted.dispatch('link-delete', { ...link, notePath: 'note.md' }, 'instance');
+  expect(restarted.referencesBlock('block')).toBe(false);
+  const afterDelete = new VaultKnowledgeStore('vault', io); await afterDelete.load();
+  expect(afterDelete.referencesBlock('block')).toBe(false);
 });
 
 it('rejects oversized excerpts before a session or journal write is requested', () => {

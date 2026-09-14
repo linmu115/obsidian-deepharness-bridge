@@ -43,7 +43,7 @@ export class VaultKnowledgeStore {
   private readonly work = new SerialWork();
   private state!: State;
   constructor(private readonly vaultId: string, private readonly io: KnowledgeVaultIO) {}
-  referencesBlock(blockId: string): boolean { return this.state?.links.some(link => link.blockId === blockId && link.sticker !== undefined) ?? false; }
+  referencesBlock(blockId: string): boolean { return this.state?.links.some(link => !link.deleted && link.blockId === blockId) ?? false; }
   async load(): Promise<void> {
     const stored = await this.io.readState();
     this.state = stored === null ? { version: 1, vaultId: this.vaultId, notes: [], fences: [], links: [], imports: [], syncs: [] } : stateSchema.parse(stored);

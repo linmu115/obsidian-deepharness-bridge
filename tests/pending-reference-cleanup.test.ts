@@ -59,6 +59,28 @@ function record(
 }
 
 describe("pending reference marker cleanup", () => {
+  it('leaves a same-ID marker in another note alone after the original was cleaned', async () => {
+    const vault = new MemoryVault();
+    vault.files.set(notePath, '# 笔记\n\n引用内容\n');
+    vault.files.set('other.md', markdown);
+    expect((await cleanupOwnedPendingMarker(vault, record('a'), [], [])).reason).toBe('already-absent');
+    expect(vault.files.get('other.md')).toBe(markdown);
+  });
+
+  it('cleans a standalone plugin marker without deleting surrounding prose', async () => {
+    const vault = new MemoryVault(); vault.files.set(notePath, `正文\n\n^${blockId}\n后文`);
+    expect((await cleanupOwnedPendingMarker(vault, record('a'), [], [])).reason).toBe('removed');
+    expect(vault.files.get(notePath)).toBe('正文\n\n\n后文');
+  });
+
+  it('keeps cleanup pending if an association starts using the marker during the note write', async () => {
+    const vault = new MemoryVault(); vault.files.set(notePath, markdown);
+    let active = false;
+    const process = vault.process.bind(vault);
+    vault.process = async (path, update) => { active = true; return process(path, update); };
+    expect((await cleanupOwnedPendingMarker(vault, record('a'), [], [], { isExternallyReferenced: () => active })).reason).toBe('still-referenced');
+    expect(vault.files.get(notePath)).toBe(markdown);
+  });
   it("removes only the plugin-created block marker and keeps the note text", async () => {
     const vault = new MemoryVault();
     vault.files.set(notePath, markdown);

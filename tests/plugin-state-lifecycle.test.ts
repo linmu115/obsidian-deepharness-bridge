@@ -49,6 +49,8 @@ interface Internals {
   commitBacklink(commit: BacklinkCommitV2): Promise<unknown>;
   deleteReferencesForMarker(marker: string): Promise<void>;
   deleteCommittedReference(commit: ReferenceDeleteCommitV2): Promise<void>;
+  cleanupUnusedMarkers(): Promise<void>;
+  knowledge?: { referencesBlock(blockId: string): boolean };
 }
 
 const opened: DeepHarnessBridgePlugin[] = [];
@@ -96,6 +98,49 @@ beforeEach(() => { vi.stubGlobal("document", {}); vi.mocked(ensureDshWebViewer).
 afterEach(async () => { await Promise.all(opened.splice(0).map((plugin) => plugin.shutdown())); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe("plugin state persistence and lifecycle", () => {
+  it('retains only marker ownership across restart until the last association is removed', async () => {
+    const first = fixture([claimed('a', 'plugin-created')]);
+    first.internals.knowledge = { referencesBlock: () => true };
+    await first.plugin.discardReference('a');
+    expect(first.plugin.pendingReferences).toEqual([]);
+    expect(first.files.get('a.md')).toBe('quote ^dsh-note-a\n');
+    const saved = structuredClone(first.internals.data);
+    expect(saved.ownedMarkers).toEqual([{ notePath: 'a.md', blockId: 'dsh-note-a' }]);
+    expect(JSON.stringify(saved.ownedMarkers)).not.toContain('quote');
+    const next = fixture(); next.internals.data = saved;
+    next.put('a.md', first.files.get('a.md')!);
+    let active = true;
+    next.internals.knowledge = { referencesBlock: () => active };
+    await next.internals.cleanupUnusedMarkers();
+    expect(next.files.get('a.md')).toContain('^dsh-note-a');
+    active = false;
+    await next.internals.cleanupUnusedMarkers();
+    expect(next.files.get('a.md')).toBe('quote\n');
+    expect(next.internals.data.ownedMarkers).toEqual([]);
+  });
+
+  it('retries a deferred marker after a write error without dropping ownership', async () => {
+    const f = fixture();
+    f.internals.data.ownedMarkers = [{ notePath: 'a.md', blockId: 'dsh-note-a' }];
+    f.put('a.md', 'quote ^dsh-note-a\n');
+    vi.spyOn(f.internals.adapter!, 'process').mockRejectedValueOnce(new Error('busy'));
+    await f.internals.cleanupUnusedMarkers();
+    expect(f.internals.data.ownedMarkers).toHaveLength(1);
+    await f.internals.cleanupUnusedMarkers();
+    expect(f.files.get('a.md')).toBe('quote\n');
+    expect(f.internals.data.ownedMarkers).toEqual([]);
+  });
+
+  it('does not claim or clean user-created markers after an association is removed', async () => {
+    const f = fixture([claimed('a', 'pre-existing')]);
+    f.internals.knowledge = { referencesBlock: () => true };
+    await f.plugin.discardReference('a');
+    f.internals.knowledge = { referencesBlock: () => false };
+    await f.internals.cleanupUnusedMarkers();
+    expect(f.files.get('a.md')).toBe('quote ^dsh-note-a\n');
+    expect(f.internals.data.ownedMarkers).toEqual([]);
+  });
+
   it("protects a queued capture when an older reference sharing its marker is cancelled first", async () => {
     const a = claimed("a", "plugin-created");
     const { plugin, internals, files } = fixture([{ ...a, state: "queued" }]);

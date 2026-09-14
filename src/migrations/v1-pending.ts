@@ -11,6 +11,7 @@ import {
   type ReferenceDeleteRequestV2,
 } from "../protocol.ts";
 import type { DeepHarnessBridgeSettings } from "../settings.ts";
+import { z } from "zod";
 import { createObsidianReferenceCapture, occurrenceAtBlock } from "../vault/reference-source.ts";
 
 export interface LegacyPendingCitationV1 {
@@ -23,6 +24,12 @@ export interface LegacyPendingCitationV1 {
 }
 
 export type BlockIdOwnership = "plugin-created" | "pre-existing";
+
+export const ownedMarkerSchema = z.object({
+  notePath: z.string().min(1).max(2048).refine(p => !p.startsWith('/') && !p.includes('\\') && !p.split('/').includes('..') && !p.includes(':')),
+  blockId: z.string().min(1).max(256).regex(/^[A-Za-z0-9-]+$/),
+});
+export type OwnedMarker = z.infer<typeof ownedMarkerSchema>;
 
 interface MarkerOwnership {
   blockIdOwnership: BlockIdOwnership;
@@ -46,6 +53,8 @@ export interface StoredPluginDataV2 {
   pendingReferences: PendingReferenceRecord[];
   backlinkReceipts: BacklinkReceiptV2[];
   referenceDeleteRequests: ReferenceDeleteRequestV2[];
+  /** Explicit plugin ownership only; no note snapshots. Kept until the last user releases it. */
+  ownedMarkers?: OwnedMarker[];
 }
 
 interface StoredPluginDataV1 {
@@ -121,6 +130,7 @@ function validateV2(value: StoredPluginDataV2): StoredPluginDataV2 {
     pendingReferences,
     backlinkReceipts: value.backlinkReceipts.map((receipt) => BacklinkReceiptV2Schema.parse(receipt)),
     referenceDeleteRequests: (value.referenceDeleteRequests ?? []).map((request) => ReferenceDeleteRequestV2Schema.parse(request)),
+    ownedMarkers: (value.ownedMarkers ?? []).map(marker => ownedMarkerSchema.parse(marker)),
   };
 }
 
@@ -178,7 +188,7 @@ export async function migrateStoredPluginData(raw: unknown, options: MigrationOp
       blockIdOwnership: markerOwnership(undefined, capture),
     });
   }
-  return { dataVersion: 2, vaultId, settings, pendingReferences, backlinkReceipts: [], referenceDeleteRequests: [] };
+  return { dataVersion: 2, vaultId, settings, pendingReferences, backlinkReceipts: [], referenceDeleteRequests: [], ownedMarkers: [] };
 }
 
 export function releaseMigratedReference(

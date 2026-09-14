@@ -66,7 +66,8 @@ import {
   findCommittedReferenceNavigationTarget,
   type CommittedReferenceNavigationTarget,
 } from "./vault/references.ts";
-import { cleanupOwnedPendingMarker } from "./vault/pending-reference-cleanup.ts";
+import { cleanupOwnedMarker, cleanupOwnedPendingMarker } from "./vault/pending-reference-cleanup.ts";
+import { rememberOwnedMarkers } from './vault/owned-markers.ts';
 import { locateObsidianReference, refreshObsidianReference } from "./vault/reference-source.ts";
 import { readSessionNote, saveSessionNote } from "./vault/session-notes.ts";
 import { listStickerBacklinks } from "./vault/sticker-backlinks.ts";
@@ -372,11 +373,12 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
       );
     }
     this.data = {
-      ...discarded.data,
+      ...rememberOwnedMarkers(discarded.data, this.data.pendingReferences),
       referenceDeleteRequests: discarded.data.referenceDeleteRequests.filter((request) => request.referenceId !== referenceId),
     };
     await this.persist();
     this.bridge?.cancelReference(referenceId);
+    await this.cleanupUnusedMarkers();
   }
 
   async openReferenceNote(record: PendingReferenceRecord): Promise<void> {
@@ -398,9 +400,28 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
   }
 
   private async persist(): Promise<void> {
-    this.data = { ...this.data, settings: this.settings };
+    this.data = { ...rememberOwnedMarkers(this.data), settings: this.settings };
     await this.saveData(this.data);
     this.persistedData = this.data;
+  }
+
+  /** Run under stateWork. Failed or shared markers stay durable for later retry. */
+  private async cleanupUnusedMarkers(): Promise<void> {
+    for (const marker of this.data.ownedMarkers ?? []) {
+      try {
+        const result = await cleanupOwnedMarker(this.vaultAdapter(), marker,
+          this.markerReferences(this.data.pendingReferences, ''), this.data.backlinkReceipts,
+          { isExternallyReferenced: id => (this.knowledge?.referencesBlock(id) ?? false)
+            || this.markerReferences(this.data.pendingReferences, '').some(r => captureOf(r)?.source.locator.blockId === id) });
+        if (result.reason === 'still-referenced') continue;
+        const before = this.data;
+        this.data = { ...this.data, ownedMarkers: (this.data.ownedMarkers ?? []).filter(m => m !== marker) };
+        try { await this.persist(); } catch (error) { this.data = before; throw error; }
+      } catch (error) {
+        this.lastOperationError = `定位标记清理待重试：${error instanceof Error ? error.message : String(error)}`;
+        this.scheduleKnowledgeSync(30000);
+      }
+    }
   }
 
   connectionSummary(): string {
@@ -492,7 +513,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
       && record.blockIdOwnership === "plugin-created"
       && record.capture.source.locator.notePath === selection.source.locator.notePath
       && record.capture.source.locator.blockId === selection.source.locator.blockId);
-    if (owner || persistedOwner) {
+    if (owner || persistedOwner || this.data.ownedMarkers?.some(marker => marker.blockId === selection.source.locator.blockId && marker.notePath === selection.source.locator.notePath)) {
       // Ownership belongs to this note marker, not to the first reference that
       // happened to create it. Keep it through queued captures and failed saves.
       for (const capture of reservations) {
@@ -506,7 +527,11 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
   private async rollbackSelectionMarker(selection: NoteSelection): Promise<void> {
     if ((this.pendingSelections.get(this.selectionMarkerKey(selection))?.size ?? 0) > 1) return;
     const { notePath, blockId } = selection.source.locator;
-    if (this.knowledge?.referencesBlock(blockId)) return;
+    if (this.knowledge?.referencesBlock(blockId)) {
+      this.data = rememberOwnedMarkers(this.data, [{ state: 'queued', capture: selection, blockIdOwnership: selection.blockIdOwnership }]);
+      await this.persist();
+      return;
+    }
     const shared = this.data.pendingReferences.some((record) => captureOf(record)?.source.locator.blockId === blockId
       && captureOf(record)?.source.locator.notePath === notePath)
       || this.data.backlinkReceipts.some((receipt) => receipt.blockId === blockId && receipt.notePath === notePath);
@@ -656,7 +681,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
               capture: { ...record.capture, source: result.source },
               blockIdOwnership: record.blockIdOwnership,
             };
-      this.data = { ...this.data, pendingReferences };
+      this.data = { ...rememberOwnedMarkers(this.data), pendingReferences };
       await this.persist();
     }
     return result;
@@ -702,7 +727,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
       ));
       const backlinkReceipts = this.data.backlinkReceipts.filter((receipt) => receipt.referenceId !== referenceId);
       await cleanupOwnedPendingMarker(this.vaultAdapter(), record, this.markerReferences(pendingReferences, referenceId), backlinkReceipts, { isExternallyReferenced: blockId => this.knowledge?.referencesBlock(blockId) ?? false });
-      this.data = { ...this.data, pendingReferences };
+      this.data = { ...rememberOwnedMarkers(this.data), pendingReferences };
       await this.persist();
     } else if (record !== undefined) {
       this.data = {
@@ -717,12 +742,13 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
     // Retry discovery even without a receipt: a prior note write/cleanup may
     // have completed before its corresponding state save failed.
     await deleteCommittedReferenceBacklink(this.vaultAdapter(), commit, recordedPath);
-    if (receipt === undefined) return;
+    if (receipt === undefined) { await this.cleanupUnusedMarkers(); return; }
     this.data = {
       ...this.data,
       backlinkReceipts: this.data.backlinkReceipts.filter((candidate) => candidate.referenceId !== referenceId),
     };
     await this.persist();
+    await this.cleanupUnusedMarkers();
   }
 
   private async openReferenceTarget(target: CommittedReferenceNavigationTarget): Promise<void> {
@@ -946,6 +972,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
       openNote: async (path, blockId) => { await this.app.workspace.openLinkText(path + (blockId ? '#^' + blockId : ''), '', false); },
     });
     await this.knowledge.load();
+    await this.mutate(() => this.cleanupUnusedMarkers());
     this.linkedReferences = new LinkedReferenceService({
       getLink: (objectId, instanceId) => this.knowledge!.dispatch('link-get', { objectId }, instanceId) as Promise<LocalKnowledgeLink>,
       resolveNote: (noteId, instanceId) => this.knowledge!.dispatch('note-resolve', { noteId }, instanceId) as Promise<NoteIdentity>,
@@ -1017,14 +1044,19 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
     let journalled = false, released = false;
     const release = async (cancel: boolean) => {
       if (released) return;
-      try { if (cancel && !journalled) await this.rollbackSelectionMarker(reserved); }
+      try { if (cancel && !journalled) await this.mutate(() => this.rollbackSelectionMarker(reserved)); }
       finally {
         released = true;
         const key = this.selectionMarkerKey(reserved), entries = this.pendingSelections.get(key);
         entries?.delete(reserved); if (!entries?.size) this.pendingSelections.delete(key);
       }
+      await this.mutate(() => this.cleanupUnusedMarkers());
     };
     try {
+      await this.mutate(async () => {
+        this.data = rememberOwnedMarkers(this.data, [{ state: 'queued', capture: reserved, blockIdOwnership: reserved.blockIdOwnership }]);
+        await this.persist();
+      });
       // Validate the bounded quote before creating a session or local write intent.
       selectionStickerIntent(reserved, { logicalSessionId: 'validate', nativeSessionId: 'validate', title: 'validate' });
       const request = await this.knowledgeClient();
@@ -1070,6 +1102,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
     if (!this.knowledge || this.stopping) return Promise.resolve();
     if (this.knowledgeSync) return this.knowledgeSync;
     const work = async () => {
+      await this.mutate(() => this.cleanupUnusedMarkers());
       const request = await this.knowledgeClient(), status = await request<{ instanceId: string }>('status');
       if (force) await this.knowledge!.dispatch('sync-dirty', {}, status.instanceId);
       const result = await syncKnowledgeBatch(this.knowledge!, status.instanceId, async link => {
@@ -1079,6 +1112,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
         await this.knowledgeWrites.run(() => this.syncKnowledgeLink(link, status.instanceId, request));
       }, () => this.stopping);
       if (!result.done) this.scheduleKnowledgeSync();
+      await this.mutate(() => this.cleanupUnusedMarkers());
     };
     this.knowledgeSync = work().finally(() => { this.knowledgeSync = undefined; });
     return this.knowledgeSync;
@@ -1157,7 +1191,10 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
             return this.knowledgeWrites.run(() => this.linkedReferences!.request(operation, input, instanceId));
           }
           if (!this.knowledge) throw new Error('知识登记未就绪');
-          if (['link-commit', 'link-delete', 'link-register'].includes(operation)) return this.knowledgeWrites.run(() => this.knowledge!.dispatch(operation, input, instanceId)).finally(() => this.scheduleKnowledgeSync());
+          if (['link-commit', 'link-delete', 'link-register'].includes(operation)) return this.knowledgeWrites.run(() => this.knowledge!.dispatch(operation, input, instanceId)).then(async result => {
+            await this.mutate(() => this.cleanupUnusedMarkers());
+            return result;
+          }).finally(() => this.scheduleKnowledgeSync());
           return this.knowledge.dispatch(operation, input, instanceId);
         },
       });
