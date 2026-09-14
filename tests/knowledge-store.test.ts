@@ -81,3 +81,14 @@ it('finds an offline move by identity even when another note reuses the old path
   await expect(restarted.dispatch('import-cursor', {}, 'instance')).resolves.toEqual({ after: 'receipt-100' });
   await expect(restarted.dispatch('import-cursor', {}, 'foreign')).resolves.toEqual({ after: '' });
 });
+
+it('rejects a stale synchronization page instead of restoring a newer deletion', async () => {
+  const f = await fixture();
+  const intent = { objectId: 'one', notePath: '笔记.md', logicalSessionId: 'logical', nativeSessionId: 'native', title: '讨论' };
+  await f.store.dispatch('link-commit', intent, 'instance');
+  const old = await f.store.dispatch('link-get', { objectId: 'one' }, 'instance') as Record<string, unknown>;
+  await f.store.dispatch('link-delete', intent, 'instance');
+  await expect(f.store.dispatch('link-commit', { ...old, notePath: '笔记.md', repair: true }, 'instance')).rejects.toThrow('意图已改变');
+  expect(await f.store.dispatch('link-get', { objectId: 'one' }, 'instance')).toMatchObject({ deleted: true, revision: 2 });
+  expect(f.files.get('笔记.md')).not.toContain('dsh-session-link:one');
+});

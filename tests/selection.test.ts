@@ -23,6 +23,31 @@ class FakeEditor {
 }
 
 describe("Obsidian selection capture", () => {
+  it('offers separate session sticker actions in editing and reading menus', async () => {
+    const selections: unknown[] = [];
+    const actions = new Map<string, () => Promise<void>>();
+    const menu = { addItem(configure: (item: unknown) => void) { let title = ''; const item = { setTitle(value: string) { title = value; return this; }, setIcon() { return this; }, onClick(callback: () => Promise<void>) { actions.set(title, callback); return this; } }; configure(item); return this; } };
+    let editorListener!: (menu: unknown, editor: unknown, info: unknown) => void;
+    registerEditorSelectionMenu({ app: { workspace: { on: (_event: string, callback: typeof editorListener) => { editorListener = callback; } } }, registerEvent() {} } as never,
+      async () => { throw new Error('ordinary reference should not run'); }, () => ({ vaultId: 'vault' }), error => { throw error; }, async selection => { selections.push(selection); });
+    editorListener(menu, new FakeEditor(), { file: { path: 'note.md' } });
+    expect([...actions.keys()]).toEqual(['引用到 DSH', '创建或挂接会话贴纸']);
+    await actions.get('创建或挂接会话贴纸')!();
+    expect(selections[0]).toMatchObject({ source: { selectedText: 'Generation 保存完整组合。', locator: { notePath: 'note.md' } } });
+    actions.clear();
+    let markdown = '阅读模式选段';
+    const node = {}, view = { file: { path: 'read.md' }, containerEl: { contains: (item: unknown) => item === node }, getViewData: () => markdown };
+    let listener!: (event: MouseEvent) => void;
+    registerReadingSelectionMenu({ app: { vault: { process: async (_file: unknown, update: (text: string) => string) => { markdown = update(markdown); return markdown; } }, workspace: { getActiveViewOfType: () => view } }, registerDomEvent: (_document: unknown, _event: string, callback: typeof listener) => { listener = callback; } } as never, {
+      markdownViewType: class {} as never, document: { getSelection: () => ({ rangeCount: 1, toString: () => '阅读模式选段', getRangeAt: () => ({ commonAncestorContainer: node }) }) }, menuForEvent: () => menu as never,
+      onCitation: async () => { throw new Error('ordinary reference should not run'); }, onSessionSticker: async selection => { selections.push(selection); }, onError: error => { throw error; },
+    });
+    listener({} as MouseEvent);
+    expect([...actions.keys()]).toEqual(['复制', '引用到 DSH', '创建或挂接会话贴纸']);
+    await actions.get('创建或挂接会话贴纸')!();
+    expect(markdown).toMatch(/\^dsh-note-/);
+    expect(selections[1]).toMatchObject({ requiresBlockIdWrite: false, source: { selectedText: '阅读模式选段' } });
+  });
   it("reports an editor capture failure without an unhandled menu rejection", async () => {
     let listener!: (menu: unknown, editor: unknown, info: unknown) => void;
     let click!: () => Promise<void>;

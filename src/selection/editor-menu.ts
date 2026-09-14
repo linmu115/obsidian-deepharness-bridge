@@ -135,6 +135,7 @@ export function registerEditorSelectionMenu(
   onCitation: (selection: NoteSelection) => Promise<void>,
   options: () => SelectionCaptureOptions = () => ({}),
   onError: (error: unknown) => void = console.error,
+  onSessionSticker?: (selection: NoteSelection) => Promise<void>,
 ): void {
   plugin.registerEvent(plugin.app.workspace.on("editor-menu", (menu: Menu, editor: Editor, info: MarkdownFileInfo) => {
     const file = info.file;
@@ -148,5 +149,9 @@ export function registerEditorSelectionMenu(
           if (selection) await onCitation(selection);
         } catch (error) { onError(error); }
       }));
+    if (onSessionSticker) menu.addItem(item => item.setTitle('创建或挂接会话贴纸').setIcon('messages-square').onClick(async () => {
+      try { const selection = captureEditorSelection(editor, file, options()); if (selection) await onSessionSticker(selection); }
+      catch (error) { onError(error); }
+    }));
   }));
 }

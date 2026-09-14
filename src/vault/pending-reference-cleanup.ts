@@ -61,7 +61,7 @@ export async function cleanupOwnedPendingMarker(
   target: CapturedRecord,
   pendingReferences: readonly PendingReferenceRecord[],
   backlinkReceipts: readonly BacklinkReceiptV2[],
-  options: { allowMovedNote?: boolean } = {},
+  options: { allowMovedNote?: boolean; isExternallyReferenced?(blockId: string): boolean } = {},
 ): Promise<PendingMarkerCleanupResult> {
   if (target.blockIdOwnership !== "plugin-created") {
     return { markerRemoved: false, reason: "not-owned" };
@@ -73,13 +73,14 @@ export async function cleanupOwnedPendingMarker(
     return capture?.source.locator.blockId === blockId && capture.source.locator.notePath === notePath;
   });
   const sharedBacklink = backlinkReceipts.some((receipt) => receipt.blockId === blockId && receipt.notePath === notePath);
-  if (sharedPending || sharedBacklink) return { markerRemoved: false, reason: "still-referenced" };
+  if (sharedPending || sharedBacklink || options.isExternallyReferenced?.(blockId)) return { markerRemoved: false, reason: "still-referenced" };
 
   const markerPath = await locateMarkerPath(vault, notePath, blockId, options.allowMovedNote !== false);
   if (markerPath === null) return { markerRemoved: false, reason: "already-absent" };
 
   let removed = false;
   await vault.process(markerPath, (content) => {
+    if (options.isExternallyReferenced?.(blockId)) return content;
     const pattern = markerPattern(blockId);
     const matches = [...content.matchAll(pattern)];
     if (matches.length === 0) return content;

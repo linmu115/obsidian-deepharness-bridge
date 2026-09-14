@@ -1,10 +1,14 @@
 import { editorLivePreviewField, MarkdownView, Menu, Notice, Plugin } from "obsidian";
 import { join } from 'node:path';
 import { VaultKnowledgeStore } from './vault/knowledge-store.ts';
+import type { LocalKnowledgeLink } from './vault/knowledge-store.ts';
+import { syncKnowledgeBatch } from './vault/knowledge-sync.ts';
+import { selectionStickerIntent, writeSelectionSticker } from './vault/selection-sticker.ts';
 import { knowledgeFile } from './vault/knowledge-file.ts';
 import { vaultNoteIdentity } from './vault/knowledge-identity.ts';
 import { knowledgeLinkUpdate } from './vault/knowledge-link-update.ts';
 import { requestViewerKnowledge } from './webviewer/knowledge-client.ts';
+import type { KnowledgeRequest } from './webviewer/knowledge-client.ts';
 import { KnowledgeSessionPicker } from './ui/knowledge-picker.ts';
 import type { NoteIdentity, ExtensionObject } from '@linmu/dsh-session-contracts';
 
@@ -78,6 +82,7 @@ import { handleDshUrl, registerDshLinkInterceptor } from "./webviewer/deep-link.
 import { resolveDshViewerUrl } from "./webviewer/launch-url.ts";
 import { ObsidianMainMarkdownWorkspace } from "./workspace/obsidian-adapter.ts";
 import { openNoteInMainMarkdownLeaf } from "./workspace/open-note.ts";
+import { resolveReferenceNote } from './workspace/resolve-reference-note.ts';
 import {
   acknowledgeReferenceDelete,
   localDeleteCommit,
@@ -105,6 +110,9 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
   private shutdownPromise: Promise<void> | undefined;
   private adapter: ObsidianVaultAdapter | undefined;
   private knowledge: VaultKnowledgeStore | undefined;
+  private knowledgeSync: Promise<void> | undefined;
+  private readonly knowledgeWrites = new SerialWork();
+  private knowledgeSyncTimer: ReturnType<typeof setTimeout> | undefined;
   private lastOperationError = "";
   private viewerOperation: Promise<void> | undefined;
   private readonly pendingSelections = new Map<string, Set<NoteSelection>>();
@@ -186,12 +194,13 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
 
     const captureOptions = () => ({ vaultId: this.data.vaultId });
     const captureError = (error: unknown) => new Notice(`引用未能保存：${error instanceof Error ? error.message : String(error)}。请重新选择原文后重试。`);
-    registerEditorSelectionMenu(this, (selection) => this.queueReference(selection), captureOptions, captureError);
+    registerEditorSelectionMenu(this, (selection) => this.queueReference(selection), captureOptions, captureError, selection => this.openSelectionKnowledgePicker(selection));
     registerReadingSelectionMenu(this, {
       markdownViewType: MarkdownView,
       menuForEvent: (event) => Menu.forEvent(event),
       captureOptions,
       onCitation: (selection) => this.queueReference(selection),
+      onSessionSticker: selection => this.openSelectionKnowledgePicker(selection),
       onError: captureError,
     });
     registerDshLinkInterceptor(this, {
@@ -221,11 +230,11 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
     this.registerEvent(this.app.vault.on("create", invalidate));
     this.registerEvent(this.app.vault.on("modify", invalidate));
     this.registerEvent(this.app.vault.on("delete", invalidate));
-    this.registerEvent(this.app.vault.on('delete', file => { void this.knowledge?.rename(file.path, file.path, true); }));
+    this.registerEvent(this.app.vault.on('delete', file => { void this.knowledge?.rename(file.path, file.path, true).then(() => this.scheduleKnowledgeSync()).catch(error => this.knowledgeSyncError(error)); }));
     this.registerEvent(this.app.vault.on("rename", (file, oldPath) => {
       this.adapter?.invalidate(oldPath);
       this.adapter?.invalidate(file.path);
-      void this.knowledge?.rename(oldPath, file.path).then(() => this.syncKnowledgeLinks()).catch(() => undefined);
+      void this.knowledge?.rename(oldPath, file.path).then(() => this.scheduleKnowledgeSync()).catch(error => this.knowledgeSyncError(error));
     }));
     this.registerEvent(this.app.metadataCache.on("changed", () => this.adapter?.invalidateMetadata()));
     this.registerEvent(this.app.metadataCache.on("resolved", () => this.adapter?.invalidateMetadata()));
@@ -287,12 +296,15 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
   shutdown(): Promise<void> {
     if (this.shutdownPromise) return this.shutdownPromise;
     this.stopping = true;
+    clearTimeout(this.knowledgeSyncTimer);
     this.bridgeStatus = "正在关闭";
     this.shutdownPromise = this.lifecycleWork.run(async () => {
       const bridge = this.bridge;
       this.bridge = null;
       await bridge?.close();
       await this.stateWork.drain();
+      await this.knowledgeSync?.catch(() => undefined);
+      await this.knowledgeWrites.drain();
       this.bridgeStatus = "已关闭";
     });
     (this.app as BridgeHost)[SHUTDOWN_BARRIER] = this.shutdownPromise;
@@ -354,6 +366,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
         discarded.record,
         this.markerReferences(discarded.data.pendingReferences, referenceId),
         discarded.data.backlinkReceipts,
+        { isExternallyReferenced: blockId => this.knowledge?.referencesBlock(blockId) ?? false },
       );
     }
     this.data = {
@@ -491,11 +504,12 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
   private async rollbackSelectionMarker(selection: NoteSelection): Promise<void> {
     if ((this.pendingSelections.get(this.selectionMarkerKey(selection))?.size ?? 0) > 1) return;
     const { notePath, blockId } = selection.source.locator;
+    if (this.knowledge?.referencesBlock(blockId)) return;
     const shared = this.data.pendingReferences.some((record) => captureOf(record)?.source.locator.blockId === blockId
       && captureOf(record)?.source.locator.notePath === notePath)
       || this.data.backlinkReceipts.some((receipt) => receipt.blockId === blockId && receipt.notePath === notePath);
     if (selection.blockIdOwnership === "plugin-created" && !shared) selection.rollbackBlockId?.();
-    await cleanupOwnedPendingMarker(this.vaultAdapter(), { state: "queued", capture: selection, blockIdOwnership: selection.blockIdOwnership }, this.data.pendingReferences, this.data.backlinkReceipts, { allowMovedNote: false });
+    await cleanupOwnedPendingMarker(this.vaultAdapter(), { state: "queued", capture: selection, blockIdOwnership: selection.blockIdOwnership }, this.data.pendingReferences, this.data.backlinkReceipts, { allowMovedNote: false, isExternallyReferenced: id => this.knowledge?.referencesBlock(id) ?? false });
   }
 
   private enqueueSavedCapture(capture: ObsidianReferenceCaptureV2): void {
@@ -685,7 +699,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
           : candidate.capture.referenceId !== referenceId
       ));
       const backlinkReceipts = this.data.backlinkReceipts.filter((receipt) => receipt.referenceId !== referenceId);
-      await cleanupOwnedPendingMarker(this.vaultAdapter(), record, this.markerReferences(pendingReferences, referenceId), backlinkReceipts);
+      await cleanupOwnedPendingMarker(this.vaultAdapter(), record, this.markerReferences(pendingReferences, referenceId), backlinkReceipts, { isExternallyReferenced: blockId => this.knowledge?.referencesBlock(blockId) ?? false });
       this.data = { ...this.data, pendingReferences };
       await this.persist();
     } else if (record !== undefined) {
@@ -908,8 +922,12 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
   }
 
   private async knowledgeRequest<T>(operation: string, input: Record<string, unknown> = {}): Promise<T> {
-    const url = new URL(await this.resolveDshViewerUrl());
-    return requestViewerKnowledge<T>(this.app, url.origin, this.settings.webViewerSurfaceId, operation, input);
+    return (await this.knowledgeClient())<T>(operation, input);
+  }
+
+  private async knowledgeClient(): Promise<KnowledgeRequest> {
+    const origin = new URL(await this.resolveDshViewerUrl()).origin, surfaceId = this.settings.webViewerSurfaceId;
+    return <T>(operation: string, input: Record<string, unknown> = {}) => requestViewerKnowledge<T>(this.app, origin, surfaceId, operation, input);
   }
 
   private async startKnowledge(): Promise<void> {
@@ -930,7 +948,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
       const file = this.app.workspace.getActiveFile();
       if (file?.extension === 'md') this.openKnowledgePicker(file.path); else new Notice('请先打开笔记');
     } });
-    this.addCommand({ id: 'knowledge-retry-links', name: '核对并修复会话知识链接', callback: () => { void this.syncKnowledgeLinks().then(() => new Notice('本批知识链接已核对')).catch(e => new Notice(e.message)); } });
+    this.addCommand({ id: 'knowledge-retry-links', name: '核对并修复会话知识链接', callback: () => { void this.syncKnowledgeLinks(true).then(() => new Notice('知识链接正在分批核对，进度会自动保存')).catch(e => new Notice(e.message)); } });
     this.addCommand({ id: 'knowledge-import-links', name: '迁移已提交引用到知识网络', callback: () => { void this.importKnowledgeLinks().catch(e => new Notice(e.message)); } });
     this.registerEvent(this.app.workspace.on('file-menu', (menu, file) => {
       if (file.path.endsWith('.md')) menu.addItem(item => item.setTitle('关联到 DSH 会话').setIcon('messages-square').onClick(() => this.openKnowledgePicker(file.path)));
@@ -951,64 +969,130 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
         await this.knowledge!.dispatch('note-open', { noteId: params.note, ...(params.block ? { blockId: params.block } : {}) }, 'local-note-navigation');
       })().catch(e => new Notice(e.message));
     });
+    this.scheduleKnowledgeSync(1500);
   }
 
   private openKnowledgePicker(notePath: string): void {
-    new KnowledgeSessionPicker(this.app, <T>(operation: string, input?: Record<string, unknown>) => this.knowledgeRequest<T>(operation, input), async target => {
-      const status = await this.knowledgeRequest<{ instanceId: string }>('status');
+    void this.openKnowledgePickerNow(notePath).catch(error => new Notice(error instanceof Error ? error.message : String(error)));
+  }
+
+  private async openKnowledgePickerNow(notePath: string): Promise<void> {
+    const request = await this.knowledgeClient();
+    new KnowledgeSessionPicker(this.app, request, target => this.knowledgeWrites.run(async () => {
+      const status = await request<{ instanceId: string }>('status');
       const note = await this.knowledge!.dispatch('note-register', { notePath }, status.instanceId) as NoteIdentity;
       const objectId = 'note-session-' + canonicalSha256([note.vaultId, note.noteId, target.logicalSessionId]).replace(/^sha256:/, '').slice(0,40);
       // The durable local intent lets the repair command finish interrupted cross-store writes.
       await this.knowledge!.dispatch('link-commit', { objectId, notePath, ...target }, status.instanceId);
-      await this.writeKnowledgeLink(objectId, note, target.logicalSessionId, target.title, 'synced', false, true);
-    }).open();
+      try { await this.writeKnowledgeLink(objectId, note, target.logicalSessionId, target.title, 'synced', false, true, request); }
+      finally { this.scheduleKnowledgeSync(); }
+    })).open();
   }
 
-  private async writeKnowledgeLink(objectId: string, note: NoteIdentity, logicalSessionId: string, title: string, syncState = 'synced', deleted = false, explicitChange = false): Promise<void> {
+  private async openSelectionKnowledgePicker(selection: NoteSelection): Promise<void> {
+    const reserved = this.reserveSelectionMarker(selection);
+    let journalled = false, released = false;
+    const release = async (cancel: boolean) => {
+      if (released) return;
+      try { if (cancel && !journalled) await this.rollbackSelectionMarker(reserved); }
+      finally {
+        released = true;
+        const key = this.selectionMarkerKey(reserved), entries = this.pendingSelections.get(key);
+        entries?.delete(reserved); if (!entries?.size) this.pendingSelections.delete(key);
+      }
+    };
+    try {
+      // Validate the bounded quote before creating a session or local write intent.
+      selectionStickerIntent(reserved, { logicalSessionId: 'validate', nativeSessionId: 'validate', title: 'validate' });
+      const request = await this.knowledgeClient();
+      new KnowledgeSessionPicker(this.app, request, async target => {
+        if (!this.knowledge || this.stopping) throw new Error('知识登记尚未就绪');
+        const status = await request<{ instanceId: string }>('status');
+        const located = await resolveReferenceNote(this.vaultAdapter(), { protocolVersion: 1, type: 'open-note', actionId: reserved.actionId, notePath: reserved.source.locator.notePath, blockId: reserved.source.locator.blockId });
+        const intent = selectionStickerIntent({ ...reserved, source: { ...reserved.source, locator: { ...reserved.source.locator, notePath: located.notePath } } }, target);
+        // Registration is the durable retry point, before either note or Maintenance writes.
+        await this.knowledge.dispatch('link-register', intent, status.instanceId); journalled = true;
+        try {
+          const local = await this.knowledge.dispatch('link-get', { objectId: intent.objectId }, status.instanceId) as LocalKnowledgeLink;
+          await this.knowledgeWrites.run(() => this.syncKnowledgeLink(local, status.instanceId, request));
+        }
+        finally { this.scheduleKnowledgeSync(); }
+        await release(false);
+      }, { selectedText: selection.source.selectedText, onCancel: () => release(true) }).open();
+    } catch (error) { await release(true); throw error; }
+  }
+
+  private async writeKnowledgeLink(objectId: string, note: NoteIdentity, logicalSessionId: string, title: string, syncState = 'synced', deleted = false, explicitChange = false, request: KnowledgeRequest = (operation, input) => this.knowledgeRequest(operation, input)): Promise<void> {
     let existing: ExtensionObject | undefined;
-    try { existing = await this.knowledgeRequest<ExtensionObject>('get', { namespace: 'obsidian-links', objectId }); }
+    try { existing = await request<ExtensionObject>('get', { namespace: 'obsidian-links', objectId }); }
     catch (error) { if ((error as { code?: string }).code !== 'EXTENSION_NOT_FOUND') throw error; }
     const body = knowledgeLinkUpdate(existing, note, logicalSessionId, syncState, deleted, explicitChange);
-    const result = await this.knowledgeRequest<{ status: string }>('write', { namespace: 'obsidian-links', objectId, expectedRevision: existing?.revision ?? 0, title: title || '笔记会话链接', body, deleted });
+    if (existing && existing.deleted === deleted && existing.content.title === (title || '笔记会话链接') && canonicalSha256(existing.content.body) === canonicalSha256(body)) return;
+    const result = await request<{ status: string }>('write', { namespace: 'obsidian-links', objectId, expectedRevision: existing?.revision ?? 0, title: title || '笔记会话链接', body, deleted });
     if (result.status === 'conflict') throw new Error('知识链接有并发修改，请在扩展面板核对');
   }
 
-  private async syncKnowledgeLinks(): Promise<void> {
-    if (!this.knowledge || this.stopping) return;
-    const status = await this.knowledgeRequest<{ instanceId: string }>('status');
-    let after: string | undefined;
-    for (let page = 0; page < 20; page++) {
-      const result = await this.knowledge.dispatch('links', { after }, status.instanceId) as { items: { objectId: string; logicalSessionId: string; nativeSessionId: string; title: string; deleted: boolean; note?: { noteId: string; notePath: string; missing: boolean } }[]; nextCursor?: string };
-      for (const link of result.items) if (link.note) {
-        let note: NoteIdentity = { vaultId: this.data.vaultId, noteId: link.note.noteId, notePath: link.note.notePath }, syncState = 'synced';
-        try { note = await this.knowledge.dispatch('note-resolve', { noteId: link.note.noteId }, status.instanceId) as NoteIdentity; }
-        catch (error) { syncState = error instanceof Error && error.message.includes('歧义') ? 'ambiguous' : 'missing'; }
-        // Detect a Maintenance deletion before writing the old Vault intent again.
-        let current: ExtensionObject | undefined;
-        try { current = await this.knowledgeRequest<ExtensionObject>('get', { namespace: 'obsidian-links', objectId: link.objectId }); }
-        catch (error) { if ((error as { code?: string }).code !== 'EXTENSION_NOT_FOUND') throw error; }
-        knowledgeLinkUpdate(current, note, link.logicalSessionId, syncState, link.deleted);
-        if (syncState === 'synced' && !link.objectId.startsWith('legacy-reference-')) await this.knowledge.dispatch(link.deleted ? 'link-delete' : 'link-commit', { ...link, notePath: note.notePath }, status.instanceId);
-        await this.writeKnowledgeLink(link.objectId, note, link.logicalSessionId, link.title, syncState, link.deleted);
-      }
-      after = result.nextCursor;
-      if (!after) return;
-    }
-    throw new Error('链接超过本批 600 条额度，请在知识网络按范围整理');
+  private scheduleKnowledgeSync(delay = 250): void {
+    if (this.stopping) return;
+    clearTimeout(this.knowledgeSyncTimer);
+    this.knowledgeSyncTimer = setTimeout(() => { void this.syncKnowledgeLinks().catch(error => this.knowledgeSyncError(error)); }, delay);
+  }
+
+  private knowledgeSyncError(error: unknown): void {
+    this.lastOperationError = `知识链接同步待重试：${error instanceof Error ? error.message : String(error)}`;
+    this.scheduleKnowledgeSync(30000);
+  }
+
+  private syncKnowledgeLinks(force = false): Promise<void> {
+    if (!this.knowledge || this.stopping) return Promise.resolve();
+    if (this.knowledgeSync) return this.knowledgeSync;
+    const work = async () => {
+      const request = await this.knowledgeClient(), status = await request<{ instanceId: string }>('status');
+      if (force) await this.knowledge!.dispatch('sync-dirty', {}, status.instanceId);
+      const result = await syncKnowledgeBatch(this.knowledge!, status.instanceId, async link => {
+        // A viewer can switch instances between batches; never repair against another owner.
+        const current = await request<{ instanceId: string }>('status');
+        if (current.instanceId !== status.instanceId) throw new Error('内嵌页已切换实例，知识同步进度已保存');
+        await this.knowledgeWrites.run(() => this.syncKnowledgeLink(link, status.instanceId, request));
+      }, () => this.stopping);
+      if (!result.done) this.scheduleKnowledgeSync();
+    };
+    this.knowledgeSync = work().finally(() => { this.knowledgeSync = undefined; });
+    return this.knowledgeSync;
+  }
+
+  private async syncKnowledgeLink(link: LocalKnowledgeLink, instanceId: string, request: KnowledgeRequest): Promise<void> {
+    link = await this.knowledge!.dispatch('link-get', { objectId: link.objectId }, instanceId) as LocalKnowledgeLink;
+    if (!link.note) throw new Error('知识链接缺少稳定笔记身份');
+    let note: NoteIdentity = { vaultId: this.data.vaultId, noteId: link.note.noteId, notePath: link.note.notePath }, syncState = 'synced';
+    try { note = await this.knowledge!.dispatch('note-resolve', { noteId: link.note.noteId }, instanceId) as NoteIdentity; }
+    catch (error) { syncState = error instanceof Error && error.message.includes('歧义') ? 'ambiguous' : 'missing'; }
+    note = { ...note, ...(link.blockId ? { blockId: link.blockId } : {}), ...(link.heading ? { heading: link.heading } : {}) };
+    let current: ExtensionObject | undefined;
+    try { current = await request<ExtensionObject>('get', { namespace: 'obsidian-links', objectId: link.objectId }); }
+    catch (error) { if ((error as { code?: string }).code !== 'EXTENSION_NOT_FOUND') throw error; }
+    knowledgeLinkUpdate(current, note, link.logicalSessionId, syncState, link.deleted);
+    if (syncState === 'synced' && !link.objectId.startsWith('legacy-reference-')) await this.knowledge!.dispatch(link.deleted ? 'link-delete' : 'link-commit', { ...link, notePath: note.notePath, repair: true }, instanceId);
+    await this.writeKnowledgeLink(link.objectId, note, link.logicalSessionId, link.title, syncState, link.deleted, false, request);
+    await writeSelectionSticker(request, link, note);
   }
 
   private async importKnowledgeLinks(): Promise<void> {
-    const status = await this.knowledgeRequest<{ instanceId: string }>('status');
+    return this.knowledgeWrites.run(() => this.importKnowledgeLinksNow());
+  }
+
+  private async importKnowledgeLinksNow(): Promise<void> {
+    const request = await this.knowledgeClient(), status = await request<{ instanceId: string }>('status');
     const cursor = await this.knowledge!.dispatch('import-cursor', {}, status.instanceId) as { after: string };
     const remaining = [...this.data.backlinkReceipts].filter(r => r.referenceId > cursor.after).sort((a,b) => a.referenceId < b.referenceId ? -1 : 1);
     let count = 0;
     for (const receipt of remaining.slice(0,100)) {
       const target = await findCommittedReferenceNavigationTarget(this.vaultAdapter(), receipt.referenceId, receipt.notePath);
       if (!target || target.dshInstanceId !== status.instanceId) { await this.knowledge!.dispatch('import-cursor', { after: receipt.referenceId }, status.instanceId); continue; }
-      const identity = await this.knowledgeRequest<{ logicalSessionId: string; nativeSessionId: string; title: string }>('resolve', target.logicalSessionId ? { logicalSessionId: target.logicalSessionId } : { nativeSessionId: target.sessionId });
+      const identity = await request<{ logicalSessionId: string; nativeSessionId: string; title: string }>('resolve', target.logicalSessionId ? { logicalSessionId: target.logicalSessionId } : { nativeSessionId: target.sessionId });
       const objectId = 'legacy-reference-' + receipt.referenceId;
       const result = await this.knowledge!.dispatch('link-register', { objectId, notePath: receipt.notePath, ...identity }, status.instanceId) as { note: NoteIdentity };
-      await this.writeKnowledgeLink(objectId, { ...result.note, blockId: receipt.blockId }, identity.logicalSessionId, identity.title);
+      await this.writeKnowledgeLink(objectId, { ...result.note, blockId: receipt.blockId }, identity.logicalSessionId, identity.title, 'synced', false, false, request);
       await this.knowledge!.dispatch('import-cursor', { after: receipt.referenceId }, status.instanceId);
       count++;
     }
@@ -1034,7 +1118,8 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
         onCommitBacklink: (commit) => this.commitBacklink(commit),
         onDeleteCommittedReference: (commit) => this.deleteCommittedReference(commit),
         onOpenNote: async (action) => {
-          await openNoteInMainMarkdownLeaf(new ObsidianMainMarkdownWorkspace(this.app), action);
+          const resolved = await resolveReferenceNote(vault, action);
+          await openNoteInMainMarkdownLeaf(new ObsidianMainMarkdownWorkspace(this.app), resolved);
         },
         onListStickerBacklinks: (target) => listStickerBacklinks(vault, target),
         onDeleteStickerBacklinks: (target) => deleteStickerBacklinks(vault, target),
@@ -1045,6 +1130,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
         },
         onKnowledge: (operation, input, instanceId) => {
           if (!this.knowledge) throw new Error('知识登记未就绪');
+          if (['link-commit', 'link-delete', 'link-register'].includes(operation)) return this.knowledgeWrites.run(() => this.knowledge!.dispatch(operation, input, instanceId)).finally(() => this.scheduleKnowledgeSync());
           return this.knowledge.dispatch(operation, input, instanceId);
         },
       });

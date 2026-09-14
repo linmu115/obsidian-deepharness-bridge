@@ -1,4 +1,5 @@
 import type { App } from 'obsidian';
+export type KnowledgeRequest = <T>(operation: string, input?: Record<string, unknown>) => Promise<T>;
 
 /** Use the already authenticated, vault-owned viewer. No cookies or launch secrets are copied. */
 export async function requestViewerKnowledge<T>(app: App, origin: string, surfaceId: string, operation: string, input: Record<string, unknown> = {}): Promise<T> {

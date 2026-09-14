@@ -189,6 +189,7 @@ export interface ReadingMenuOptions {
   copyText?(text: string): Promise<void> | void;
   captureOptions?(): SelectionCaptureOptions;
   onCitation(selection: NoteSelection): Promise<void>;
+  onSessionSticker?(selection: NoteSelection): Promise<void>;
   onError?(error: unknown): void;
 }
 
@@ -223,6 +224,13 @@ export function registerReadingSelectionMenu(plugin: Plugin, options: ReadingMen
           await options.onCitation(ready);
         } catch (error) { (options.onError ?? console.error)(error); }
       }));
+    if (options.onSessionSticker) menu.addItem(item => item.setTitle('创建或挂接会话贴纸').setIcon('messages-square').onClick(async () => {
+      try {
+        const file = view.file;
+        if (!file || file.path !== captured.source.locator.notePath) throw new Error('当前笔记已切换，请重新选择内容');
+        await options.onSessionSticker!(await ensureReadingBlockId(plugin.app.vault, file, captured));
+      } catch (error) { (options.onError ?? console.error)(error); }
+    }));
   // Obsidian resolves and shows its event-bound menu from a bubble listener.
   // Observe in capture phase so our item is present before the host displays
   // that same Menu; a document bubble listener is too late (or is skipped when

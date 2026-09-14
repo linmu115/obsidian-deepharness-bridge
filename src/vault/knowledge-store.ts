@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import type { NoteIdentity } from '@linmu/dsh-session-contracts';
+import { noteSelectionSchema, type NoteIdentity } from '@linmu/dsh-session-contracts';
 import { SerialWork } from '../serial-work.ts';
 import type { SessionNoteDocument } from '../protocol.ts';
 
@@ -10,10 +10,13 @@ const stateSchema = z.object({
   version: z.literal(1), vaultId: id,
   notes: z.array(z.object({ noteId: id, notePath, missing: z.boolean() })),
   fences: z.array(z.object({ sessionId: id, instanceId: id, migrationId: id, revision: id, phase: z.enum(['frozen', 'active']), receiptId: id.optional() })),
-  links: z.array(z.object({ objectId: id, noteId: id, instanceId: id, logicalSessionId: id, nativeSessionId: id, title: z.string().max(500), deleted: z.boolean().default(false) })),
+  links: z.array(z.object({ objectId: id, noteId: id, instanceId: id, logicalSessionId: id, nativeSessionId: id, title: z.string().max(500), deleted: z.boolean().default(false), revision: z.number().int().nonnegative().default(0), blockId: id.optional(), heading: z.string().max(500).optional(), sticker: z.object({ objectId: id, selection: noteSelectionSchema }).optional() })),
   imports: z.array(z.object({ instanceId: id, after: z.string().max(256) })).default([]),
+  syncs: z.array(z.object({ instanceId: id, after: z.string().max(256), generation: z.number().int().nonnegative(), scanGeneration: z.number().int().nonnegative(), pending: z.boolean() })).default([]),
 });
 type State = z.infer<typeof stateSchema>;
+export type KnowledgeSyncState = State['syncs'][number];
+export type LocalKnowledgeLink = State['links'][number] & { note?: State['notes'][number] };
 export interface KnowledgeVaultIO {
   readState(): Promise<unknown | null>;
   writeState(state: unknown): Promise<void>;
@@ -27,15 +30,23 @@ export interface KnowledgeVaultIO {
 }
 const failure = (message: string) => Object.assign(new Error(message), { code: 'KNOWLEDGE_CONFLICT' });
 const text = (v: unknown) => id.parse(v);
+function dirtySync(state: State, instanceId: string): void {
+  const old = state.syncs.find(s => s.instanceId === instanceId);
+  if (!old) { state.syncs.push({ instanceId, after: '', generation: 1, scanGeneration: 1, pending: true }); return; }
+  old.generation++;
+  if (!old.pending) { old.after = ''; old.scanGeneration = old.generation; }
+  old.pending = true;
+}
 
 /** Only identities, ownership fences and link receipts live here. Note bodies stay in Vault. */
 export class VaultKnowledgeStore {
   private readonly work = new SerialWork();
   private state!: State;
   constructor(private readonly vaultId: string, private readonly io: KnowledgeVaultIO) {}
+  referencesBlock(blockId: string): boolean { return this.state?.links.some(link => link.blockId === blockId && link.sticker !== undefined) ?? false; }
   async load(): Promise<void> {
     const stored = await this.io.readState();
-    this.state = stored === null ? { version: 1, vaultId: this.vaultId, notes: [], fences: [], links: [], imports: [] } : stateSchema.parse(stored);
+    this.state = stored === null ? { version: 1, vaultId: this.vaultId, notes: [], fences: [], links: [], imports: [], syncs: [] } : stateSchema.parse(stored);
     if (this.state.vaultId !== this.vaultId) throw failure('知识登记属于另一个 Vault');
   }
   private async change(update: (next: State) => void): Promise<void> {
@@ -53,6 +64,8 @@ export class VaultKnowledgeStore {
   rename(oldPath: string, path: string, missing = false): Promise<void> {
     return this.work.run(() => this.change(next => {
       for (const note of next.notes) if (note.notePath === oldPath) { note.notePath = path; note.missing = missing; }
+      const notes = new Set(next.notes.filter(n => n.notePath === path).map(n => n.noteId));
+      for (const instanceId of new Set(next.links.filter(l => notes.has(l.noteId)).map(l => l.instanceId))) dirtySync(next, instanceId);
     }));
   }
   private async identity(path: string): Promise<NoteIdentity> {
@@ -77,6 +90,18 @@ export class VaultKnowledgeStore {
     return this.work.run(async () => {
       text(instanceId);
       if (operation === 'info') return { vaultId: this.vaultId, protocolVersion: 1 };
+      if (operation === 'sync-state' || operation === 'sync-dirty' || operation === 'sync-progress') {
+        if (operation === 'sync-dirty' || !this.state.syncs.some(s => s.instanceId === instanceId)) await this.change(s => dirtySync(s, instanceId));
+        if (operation === 'sync-progress') await this.change(s => {
+          const current = s.syncs.find(c => c.instanceId === instanceId)!;
+          if (current.after !== input.expectedAfter || current.scanGeneration !== input.scanGeneration) throw failure('知识同步进度已改变，请重新核对');
+          if (input.complete === true) {
+            current.pending = current.generation !== current.scanGeneration;
+            current.after = ''; current.scanGeneration = current.generation;
+          } else current.after = z.string().min(1).max(256).parse(input.after);
+        });
+        return structuredClone(this.state.syncs.find(s => s.instanceId === instanceId)!);
+      }
       if (operation === 'import-cursor') {
         if (input.after !== undefined) {
           const after = z.string().max(256).parse(input.after);
@@ -117,18 +142,27 @@ export class VaultKnowledgeStore {
       }
       if (operation === 'links') {
         const after = typeof input.after === 'string' ? input.after : '';
-        const items = this.state.links.filter(l => l.instanceId === instanceId && l.objectId > after).sort((a,b) => a.objectId.localeCompare(b.objectId)).slice(0,31);
+        const items = this.state.links.filter(l => l.instanceId === instanceId && l.objectId > after).sort((a,b) => a.objectId < b.objectId ? -1 : a.objectId > b.objectId ? 1 : 0).slice(0,31);
         return { items: items.slice(0,30).map(l => ({ ...l, note: this.state.notes.find(n => n.noteId === l.noteId) })), nextCursor: items.length > 30 ? items[29]!.objectId : null };
+      }
+      if (operation === 'link-get') {
+        const link = this.state.links.find(l => l.objectId === text(input.objectId) && l.instanceId === instanceId);
+        if (!link) throw failure('此实例没有对应知识链接');
+        return structuredClone({ ...link, note: this.state.notes.find(n => n.noteId === link.noteId) });
       }
       if (operation === 'link-commit' || operation === 'link-delete' || operation === 'link-register') {
         const objectId = text(input.objectId), old = this.state.links.find(l => l.objectId === objectId);
         if (old && old.instanceId !== instanceId) throw failure('链接属于另一个实例');
+        if (input.repair === true && (!old || input.revision !== old.revision)) throw failure('知识链接意图已改变，暂停过期同步并重新读取');
         const identity = old ? await this.resolveNote(old.noteId) : await this.identity(notePath.parse(input.notePath));
         if (!identity || ('missing' in identity && identity.missing)) throw failure('笔记已移除');
-        const link = { objectId, noteId: identity.noteId, instanceId, logicalSessionId: text(input.logicalSessionId), nativeSessionId: text(input.nativeSessionId), title: String(input.title ?? 'DSH 会话').slice(0,500), deleted: operation === 'link-delete' };
+        const extra = stateSchema.shape.links.element.pick({ blockId: true, heading: true, sticker: true }).parse({ blockId: input.blockId ?? old?.blockId, heading: input.heading ?? old?.heading, sticker: input.sticker ?? old?.sticker });
+        const link = { objectId, noteId: identity.noteId, instanceId, logicalSessionId: text(input.logicalSessionId), nativeSessionId: text(input.nativeSessionId), title: String(input.title ?? 'DSH 会话').slice(0,500), deleted: operation === 'link-delete', revision: old?.revision ?? 0, ...extra };
         if (old && (old.noteId !== identity.noteId || old.logicalSessionId !== link.logicalSessionId)) throw failure('链接身份不能改绑，请新建链接');
+        if (old?.sticker && JSON.stringify(old.sticker) !== JSON.stringify(link.sticker)) throw failure('选段贴纸来源不能改绑，请新建贴纸');
+        if (JSON.stringify(old) !== JSON.stringify(link)) link.revision++;
         // Persist intent before editing Markdown; retry repairs either interrupted step.
-        await this.change(s => { s.links = s.links.filter(l => l.objectId !== objectId); s.links.push(link); });
+        await this.change(s => { s.links = s.links.filter(l => l.objectId !== objectId); s.links.push(link); if (input.repair !== true) dirtySync(s, instanceId); });
         if (operation === 'link-register') return { note: { vaultId: this.vaultId, noteId: identity.noteId, notePath: identity.notePath }, objectId };
         const marker = '<!-- dsh-session-link:' + encodeURIComponent(objectId) + ' -->';
         const close = '<!-- /dsh-session-link:' + encodeURIComponent(objectId) + ' -->';
