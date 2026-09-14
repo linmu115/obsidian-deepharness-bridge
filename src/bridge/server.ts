@@ -78,6 +78,7 @@ export interface SaveSessionNoteRequest {
 }
 
 export interface BridgeServerOptions {
+  onKnowledge?: (operation: string, input: Record<string, unknown>, instanceId: string) => Promise<unknown>;
   port?: number;
   allowedDshOrigins?: string[];
   tokenTtlMs?: number;
@@ -178,7 +179,7 @@ function errorPayload(error: unknown): { error: string; code?: string } {
 function applicationErrorStatus(error: unknown): number | null {
   if (!error || typeof error !== "object" || !("code" in error)) return null;
   const code = (error as { code?: unknown }).code;
-  if (code === "REVISION_CONFLICT" || code === "CORRUPT_MARKER" || code === "IDEMPOTENCY_CONFLICT" || code === "SOURCE_CHANGED") return 409;
+  if (code === "REVISION_CONFLICT" || code === "CORRUPT_MARKER" || code === "IDEMPOTENCY_CONFLICT" || code === "SOURCE_CHANGED" || code === "KNOWLEDGE_CONFLICT") return 409;
   if (code === "NOTE_NOT_FOUND") return 404;
   return null;
 }
@@ -673,6 +674,16 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
       }
 
       const sessionNoteMatch = /^\/v1\/session-notes\/([^/]+)$/.exec(requestUrl.pathname);
+      const knowledgeMatch = /^\/v1\/knowledge\/([a-z-]{1,40})$/.exec(requestUrl.pathname);
+      if (knowledgeMatch && request.method === 'POST') {
+        if (!authentication.dshInstanceId) throw new HttpError(409, '知识操作需要当前实例身份');
+        if (!options.onKnowledge) throw new HttpError(501, '请升级 Obsidian Companion');
+        const input = z.record(z.string(), z.unknown()).parse(await readJsonBody(request, Math.min(maxBodyBytes, 512 * 1024)));
+        const result = await options.onKnowledge(knowledgeMatch[1]!, input, authentication.dshInstanceId);
+        if (Buffer.byteLength(JSON.stringify(result)) > 512 * 1024) throw new HttpError(413, '本次结果过大，请分批读取');
+        json(response, 200, result, allowedOrigin);
+        return;
+      }
       if (sessionNoteMatch && request.method === "GET") {
         const sessionId = decodeURIComponent(sessionNoteMatch[1] ?? "");
         const document = await (options.onReadSessionNote?.(sessionId) ?? Promise.resolve(inMemoryNotes.get(sessionId) ?? null));

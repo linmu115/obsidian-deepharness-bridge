@@ -21,7 +21,7 @@ describe("local-first reference deletion contract", () => {
   it("keeps user-triggered deletion and its background acknowledgement silent", async () => {
     const source = await readFile(join(repositoryRoot, "src/main.ts"), "utf8");
     const start = source.indexOf("private async deleteReferencesForMarker");
-    const end = source.indexOf("private async startBridge", start);
+    const end = source.indexOf("private async knowledgeRequest", start);
     const deletionLifecycle = source.slice(start, end);
 
     expect(deletionLifecycle).not.toContain("new Notice");

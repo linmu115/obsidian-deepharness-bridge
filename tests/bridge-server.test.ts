@@ -63,6 +63,17 @@ function authorized(token: string, extra: HeadersInit = {}): HeadersInit {
   return { authorization: `Bearer ${token}`, origin: DSH_ORIGIN, ...extra };
 }
 
+it('binds knowledge operations to the authenticated instance and rejects unscoped clients', async () => {
+  const calls: unknown[] = [];
+  const bridge = await start({ onKnowledge: async (op, input, instance) => { calls.push({ op, input, instance }); return { ok: true }; } });
+  const token = await handshakeV2(bridge, 'knowledge-client', SURFACE_A, 'copy-instance');
+  const response = await request(bridge, '/v1/knowledge/notes', { method: 'POST', headers: authorized(token, { 'content-type': 'application/json' }), body: JSON.stringify({ instanceId: 'forged', query: '笔记' }) });
+  expect(response.status).toBe(200); expect(calls).toMatchObject([{ instance: 'copy-instance', op: 'notes' }]);
+  const unscoped = await handshakeV2(bridge, 'unscoped', SURFACE_A);
+  expect((await request(bridge, '/v1/knowledge/notes', { method: 'POST', headers: authorized(unscoped, { 'content-type': 'application/json' }), body: '{}' })).status).toBe(409);
+  expect(calls).toHaveLength(1);
+});
+
 const firstAction: DeepLinkAction = {
   protocolVersion: 1,
   type: "deep-link",

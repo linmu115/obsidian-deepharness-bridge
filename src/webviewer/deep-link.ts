@@ -40,7 +40,7 @@ export function registerDshLinkInterceptor(plugin: LinkInterceptorPlugin, option
     const link = target instanceof Element
       ? target.closest<HTMLAnchorElement>("a[href^='dsh://'], a[href^='obsidian://deepharness']")
       : null;
-    if (!link) return;
+    if (!link || (link.href.startsWith('obsidian:') && new URL(link.href).hostname !== 'deepharness')) return;
     event.preventDefault();
     event.stopPropagation();
     void handleDshUrl(link.href, options).catch((error: unknown) => options.onError?.(error));

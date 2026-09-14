@@ -21,6 +21,9 @@ importers:
       '@codemirror/view':
         specifier: 6.38.6
         version: 6.38.6
+      '@linmu/dsh-session-contracts':
+        specifier: link:../../session-context-graph-20260913/dsh-session-maintenance/packages/contracts
+        version: link:../../session-context-graph-20260913/dsh-session-maintenance/packages/contracts
       '@types/jsdom':
         specifier: 21.1.7
         version: 21.1.7
@@ -28,8 +31,8 @@ importers:
         specifier: ^24.3.0
         version: 24.13.3
       dsh-annotation-core:
-        specifier: file:C:/Users/19717/OneDrive/文档/ChatGPT/dsh/.artifacts/rc2-profile-candidate/dsh-annotation-core-0.3.11-rc2.2.tgz
-        version: file:C:/Users/19717/OneDrive/文档/ChatGPT/dsh/.artifacts/rc2-profile-candidate/dsh-annotation-core-0.3.11-rc2.2.tgz
+        specifier: file:D:/AI/DeepSeekHarness-Plugin/artifacts/knowledge-network-rc2-20260914/dsh-annotation-core-0.3.12-rc2.6.tgz
+        version: file:../../../artifacts/knowledge-network-rc2-20260914/dsh-annotation-core-0.3.12-rc2.6.tgz
       jsdom:
         specifier: 26.1.0
         version: 26.1.0
@@ -454,9 +457,9 @@ packages:
     resolution: {integrity: sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ==}
     engines: {node: '>=8'}
 
-  dsh-annotation-core@file:C:/Users/19717/OneDrive/文档/ChatGPT/dsh/.artifacts/rc2-profile-candidate/dsh-annotation-core-0.3.11-rc2.2.tgz:
-    resolution: {integrity: sha512-otO0+pwxn0QB15riZzbA/uqExdHbj2M/yYhTz40ipkyx/CdVoSAYBVE7xjbWwcyHnowGIQ+4TZdm6cg6o07UtQ==, tarball: file:C:/Users/19717/OneDrive/文档/ChatGPT/dsh/.artifacts/rc2-profile-candidate/dsh-annotation-core-0.3.11-rc2.2.tgz}
-    version: 0.3.11-rc2.2
+  dsh-annotation-core@file:../../../artifacts/knowledge-network-rc2-20260914/dsh-annotation-core-0.3.12-rc2.6.tgz:
+    resolution: {integrity: sha512-ektEzE6VO31Vju/skd2pYwISnCQhInWP22qRkrEB/ngrOg2XqE0Z60nkuElPCvCczWtCleKgVgbp0O/m/ClPTg==, tarball: file:../../../artifacts/knowledge-network-rc2-20260914/dsh-annotation-core-0.3.12-rc2.6.tgz}
+    version: 0.3.12-rc2.6
     engines: {node: '>=20'}
     peerDependencies:
       '@deepseek-ai/cordis': '*'
@@ -1310,7 +1313,7 @@ snapshots:
 
   detect-libc@2.1.2: {}
 
-  dsh-annotation-core@file:C:/Users/19717/OneDrive/文档/ChatGPT/dsh/.artifacts/rc2-profile-candidate/dsh-annotation-core-0.3.11-rc2.2.tgz:
+  dsh-annotation-core@file:../../../artifacts/knowledge-network-rc2-20260914/dsh-annotation-core-0.3.12-rc2.6.tgz:
     dependencies:
       zod: 4.4.3
 

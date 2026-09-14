@@ -27,7 +27,7 @@ describe("standalone Obsidian bundle", () => {
     // resolve arbitrary packages through this checkout's node_modules: that
     // masks missing bundled dependencies such as the protocol /data subpath.
     const isolatedRequire = (id: string): unknown => {
-      if (id === "obsidian") return { Plugin, PluginSettingTab: class {} };
+      if (id === "obsidian") return { Plugin, PluginSettingTab: class {}, Modal: class {} };
       if (isBuiltin(id) || id === "@codemirror/state" || id === "@codemirror/view") {
         return hostRequire(id);
       }

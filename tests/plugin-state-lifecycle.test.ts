@@ -21,14 +21,16 @@ vi.mock("obsidian", async () => {
     register = vi.fn(); registerEvent = vi.fn(); registerDomEvent = vi.fn();
     registerEditorExtension = vi.fn(); registerMarkdownPostProcessor = vi.fn();
     registerObsidianProtocolHandler = vi.fn(); addSettingTab = vi.fn();
+    addCommand = vi.fn();
   }
   return {
-    Plugin, Notice: vi.fn(), MarkdownView: class {}, Menu: class {}, PluginSettingTab: class {}, Setting: class {},
+    Plugin, Modal: class {}, Notice: vi.fn(), MarkdownView: class {}, Menu: class {}, PluginSettingTab: class {}, Setting: class {},
     editorLivePreviewField: {}, TFile: stub.SyntheticFile, TFolder: stub.SyntheticFolder,
     normalizePath: stub.obsidianPath, parseLinktext: stub.parseSyntheticLink,
   };
 });
 vi.mock("../src/bridge/server.ts", () => ({ startBridgeServer: vi.fn() }));
+vi.mock('../src/vault/knowledge-file.ts', () => ({ knowledgeFile: () => ({ readState: async () => null, writeState: async () => undefined }) }));
 vi.mock("../src/ui/block-id-display.ts", () => ({
   compactRenderedDshBlockIds: vi.fn(), createDshBlockIdCompactExtension: vi.fn(), hideRenderedDshReferenceBlocks: vi.fn(),
 }));
@@ -51,7 +53,7 @@ interface Internals {
 
 const opened: DeepHarnessBridgePlugin[] = [];
 const settings = { ...DEFAULT_SETTINGS, webViewerSurfaceId: "7b31f255-d087-4f8e-bdd6-d09a61860819" };
-const manifest = { id: "obsidian-deepharness-bridge", name: "test", version: "test", minAppVersion: "1.0.0", author: "test", description: "synthetic" };
+const manifest = { id: "obsidian-deepharness-bridge", name: "test", version: "test", minAppVersion: "1.0.0", author: "test", description: "synthetic", dir: '.obsidian/plugins/synthetic-knowledge' };
 
 function gate() {
   let resolve!: () => void;
@@ -79,6 +81,7 @@ function bridgeStub(): RunningBridge {
 
 function fixture(records: PendingReferenceRecord[] = []) {
   const host = syntheticApp();
+  Object.assign(host.vault, { adapter: { getBasePath: () => '/synthetic-knowledge-fixture' } });
   const plugin = new DeepHarnessBridgePlugin(host.app, manifest); opened.push(plugin);
   plugin.settings = { ...settings };
   const internals = plugin as unknown as Internals;

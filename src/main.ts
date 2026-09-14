@@ -1,4 +1,12 @@
 import { editorLivePreviewField, MarkdownView, Menu, Notice, Plugin } from "obsidian";
+import { join } from 'node:path';
+import { VaultKnowledgeStore } from './vault/knowledge-store.ts';
+import { knowledgeFile } from './vault/knowledge-file.ts';
+import { vaultNoteIdentity } from './vault/knowledge-identity.ts';
+import { knowledgeLinkUpdate } from './vault/knowledge-link-update.ts';
+import { requestViewerKnowledge } from './webviewer/knowledge-client.ts';
+import { KnowledgeSessionPicker } from './ui/knowledge-picker.ts';
+import type { NoteIdentity, ExtensionObject } from '@linmu/dsh-session-contracts';
 
 import { startBridgeServer, type RunningBridge } from "./bridge/server.ts";
 import { SerialWork } from "./serial-work.ts";
@@ -96,6 +104,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
   private stopping = false;
   private shutdownPromise: Promise<void> | undefined;
   private adapter: ObsidianVaultAdapter | undefined;
+  private knowledge: VaultKnowledgeStore | undefined;
   private lastOperationError = "";
   private viewerOperation: Promise<void> | undefined;
   private readonly pendingSelections = new Map<string, Set<NoteSelection>>();
@@ -146,6 +155,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
     this.data = { ...this.data, settings: this.settings };
     await this.mutate(() => this.persist());
     if (this.stopping) return;
+    await this.startKnowledge();
 
     const chipActions = {
       onOpen: (marker: string, chip: HTMLElement) => {
@@ -211,9 +221,11 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
     this.registerEvent(this.app.vault.on("create", invalidate));
     this.registerEvent(this.app.vault.on("modify", invalidate));
     this.registerEvent(this.app.vault.on("delete", invalidate));
+    this.registerEvent(this.app.vault.on('delete', file => { void this.knowledge?.rename(file.path, file.path, true); }));
     this.registerEvent(this.app.vault.on("rename", (file, oldPath) => {
       this.adapter?.invalidate(oldPath);
       this.adapter?.invalidate(file.path);
+      void this.knowledge?.rename(oldPath, file.path).then(() => this.syncKnowledgeLinks()).catch(() => undefined);
     }));
     this.registerEvent(this.app.metadataCache.on("changed", () => this.adapter?.invalidateMetadata()));
     this.registerEvent(this.app.metadataCache.on("resolved", () => this.adapter?.invalidateMetadata()));
@@ -895,6 +907,115 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
     await this.persist();
   }
 
+  private async knowledgeRequest<T>(operation: string, input: Record<string, unknown> = {}): Promise<T> {
+    const url = new URL(await this.resolveDshViewerUrl());
+    return requestViewerKnowledge<T>(this.app, url.origin, this.settings.webViewerSurfaceId, operation, input);
+  }
+
+  private async startKnowledge(): Promise<void> {
+    const adapter = this.app.vault.adapter as typeof this.app.vault.adapter & { getBasePath?(): string };
+    const base = adapter.getBasePath?.();
+    if (!base || !this.manifest.dir) throw new Error('知识网络需要桌面端本地 Vault');
+    const vault = this.vaultAdapter();
+    this.knowledge = new VaultKnowledgeStore(this.data.vaultId, {
+      ...knowledgeFile(join(base, this.manifest.dir, 'knowledge.json')),
+      ...vaultNoteIdentity(this.app),
+      listPaths: () => this.app.vault.getMarkdownFiles().map(f => f.path),
+      readLegacy: sessionId => readSessionNote(vault, sessionId),
+      updateNote: (path, update) => vault.update(path, update),
+      openNote: async (path, blockId) => { await this.app.workspace.openLinkText(path + (blockId ? '#^' + blockId : ''), '', false); },
+    });
+    await this.knowledge.load();
+    this.addCommand({ id: 'knowledge-link-session', name: '将当前笔记关联到会话', callback: () => {
+      const file = this.app.workspace.getActiveFile();
+      if (file?.extension === 'md') this.openKnowledgePicker(file.path); else new Notice('请先打开笔记');
+    } });
+    this.addCommand({ id: 'knowledge-retry-links', name: '核对并修复会话知识链接', callback: () => { void this.syncKnowledgeLinks().then(() => new Notice('本批知识链接已核对')).catch(e => new Notice(e.message)); } });
+    this.addCommand({ id: 'knowledge-import-links', name: '迁移已提交引用到知识网络', callback: () => { void this.importKnowledgeLinks().catch(e => new Notice(e.message)); } });
+    this.registerEvent(this.app.workspace.on('file-menu', (menu, file) => {
+      if (file.path.endsWith('.md')) menu.addItem(item => item.setTitle('关联到 DSH 会话').setIcon('messages-square').onClick(() => this.openKnowledgePicker(file.path)));
+    }));
+    this.registerObsidianProtocolHandler('deepharness-session', params => {
+      void (async () => {
+        const status = await this.knowledgeRequest<{ instanceId: string }>('status');
+        if (status.instanceId !== params.instance) throw new Error('链接属于另一实例，请先在此 Vault 打开对应实例');
+        const target = await this.knowledgeRequest<{ nativeSessionId: string; logicalSessionId: string }>('resolve', { logicalSessionId: params.session });
+        if (!this.bridge) throw new Error('Bridge 尚未就绪');
+        this.bridge.enqueue({ protocolVersion: 1, type: 'deep-link', actionId: crypto.randomUUID(), dshInstanceId: status.instanceId, logicalSessionId: target.logicalSessionId, sessionId: target.nativeSessionId, anchorId: '@session', targetSurfaceId: this.settings.webViewerSurfaceId });
+        await ensureDshWebViewer(this.app, dshViewerUrlForSurface(await this.resolveDshViewerUrl(), this.settings.webViewerSurfaceId));
+      })().catch(e => new Notice(e.message));
+    });
+    this.registerObsidianProtocolHandler('deepharness-note', params => {
+      void (async () => {
+        if (params.vault !== this.data.vaultId) throw new Error('链接属于另一个 Vault');
+        await this.knowledge!.dispatch('note-open', { noteId: params.note, ...(params.block ? { blockId: params.block } : {}) }, 'local-note-navigation');
+      })().catch(e => new Notice(e.message));
+    });
+  }
+
+  private openKnowledgePicker(notePath: string): void {
+    new KnowledgeSessionPicker(this.app, <T>(operation: string, input?: Record<string, unknown>) => this.knowledgeRequest<T>(operation, input), async target => {
+      const status = await this.knowledgeRequest<{ instanceId: string }>('status');
+      const note = await this.knowledge!.dispatch('note-register', { notePath }, status.instanceId) as NoteIdentity;
+      const objectId = 'note-session-' + canonicalSha256([note.vaultId, note.noteId, target.logicalSessionId]).replace(/^sha256:/, '').slice(0,40);
+      // The durable local intent lets the repair command finish interrupted cross-store writes.
+      await this.knowledge!.dispatch('link-commit', { objectId, notePath, ...target }, status.instanceId);
+      await this.writeKnowledgeLink(objectId, note, target.logicalSessionId, target.title, 'synced', false, true);
+    }).open();
+  }
+
+  private async writeKnowledgeLink(objectId: string, note: NoteIdentity, logicalSessionId: string, title: string, syncState = 'synced', deleted = false, explicitChange = false): Promise<void> {
+    let existing: ExtensionObject | undefined;
+    try { existing = await this.knowledgeRequest<ExtensionObject>('get', { namespace: 'obsidian-links', objectId }); }
+    catch (error) { if ((error as { code?: string }).code !== 'EXTENSION_NOT_FOUND') throw error; }
+    const body = knowledgeLinkUpdate(existing, note, logicalSessionId, syncState, deleted, explicitChange);
+    const result = await this.knowledgeRequest<{ status: string }>('write', { namespace: 'obsidian-links', objectId, expectedRevision: existing?.revision ?? 0, title: title || '笔记会话链接', body, deleted });
+    if (result.status === 'conflict') throw new Error('知识链接有并发修改，请在扩展面板核对');
+  }
+
+  private async syncKnowledgeLinks(): Promise<void> {
+    if (!this.knowledge || this.stopping) return;
+    const status = await this.knowledgeRequest<{ instanceId: string }>('status');
+    let after: string | undefined;
+    for (let page = 0; page < 20; page++) {
+      const result = await this.knowledge.dispatch('links', { after }, status.instanceId) as { items: { objectId: string; logicalSessionId: string; nativeSessionId: string; title: string; deleted: boolean; note?: { noteId: string; notePath: string; missing: boolean } }[]; nextCursor?: string };
+      for (const link of result.items) if (link.note) {
+        let note: NoteIdentity = { vaultId: this.data.vaultId, noteId: link.note.noteId, notePath: link.note.notePath }, syncState = 'synced';
+        try { note = await this.knowledge.dispatch('note-resolve', { noteId: link.note.noteId }, status.instanceId) as NoteIdentity; }
+        catch (error) { syncState = error instanceof Error && error.message.includes('歧义') ? 'ambiguous' : 'missing'; }
+        // Detect a Maintenance deletion before writing the old Vault intent again.
+        let current: ExtensionObject | undefined;
+        try { current = await this.knowledgeRequest<ExtensionObject>('get', { namespace: 'obsidian-links', objectId: link.objectId }); }
+        catch (error) { if ((error as { code?: string }).code !== 'EXTENSION_NOT_FOUND') throw error; }
+        knowledgeLinkUpdate(current, note, link.logicalSessionId, syncState, link.deleted);
+        if (syncState === 'synced' && !link.objectId.startsWith('legacy-reference-')) await this.knowledge.dispatch(link.deleted ? 'link-delete' : 'link-commit', { ...link, notePath: note.notePath }, status.instanceId);
+        await this.writeKnowledgeLink(link.objectId, note, link.logicalSessionId, link.title, syncState, link.deleted);
+      }
+      after = result.nextCursor;
+      if (!after) return;
+    }
+    throw new Error('链接超过本批 600 条额度，请在知识网络按范围整理');
+  }
+
+  private async importKnowledgeLinks(): Promise<void> {
+    const status = await this.knowledgeRequest<{ instanceId: string }>('status');
+    const cursor = await this.knowledge!.dispatch('import-cursor', {}, status.instanceId) as { after: string };
+    const remaining = [...this.data.backlinkReceipts].filter(r => r.referenceId > cursor.after).sort((a,b) => a.referenceId < b.referenceId ? -1 : 1);
+    let count = 0;
+    for (const receipt of remaining.slice(0,100)) {
+      const target = await findCommittedReferenceNavigationTarget(this.vaultAdapter(), receipt.referenceId, receipt.notePath);
+      if (!target || target.dshInstanceId !== status.instanceId) { await this.knowledge!.dispatch('import-cursor', { after: receipt.referenceId }, status.instanceId); continue; }
+      const identity = await this.knowledgeRequest<{ logicalSessionId: string; nativeSessionId: string; title: string }>('resolve', target.logicalSessionId ? { logicalSessionId: target.logicalSessionId } : { nativeSessionId: target.sessionId });
+      const objectId = 'legacy-reference-' + receipt.referenceId;
+      const result = await this.knowledge!.dispatch('link-register', { objectId, notePath: receipt.notePath, ...identity }, status.instanceId) as { note: NoteIdentity };
+      await this.writeKnowledgeLink(objectId, { ...result.note, blockId: receipt.blockId }, identity.logicalSessionId, identity.title);
+      await this.knowledge!.dispatch('import-cursor', { after: receipt.referenceId }, status.instanceId);
+      count++;
+    }
+    if (remaining.length <= 100) await this.knowledge!.dispatch('import-cursor', { after: '' }, status.instanceId);
+    new Notice(`已核对 ${count} 条已提交引用关系。${remaining.length > 100 ? '进度已保存，再次运行此命令继续下一批。' : '本次遍历完成。'}`);
+  }
+
   private async startBridge(): Promise<void> {
     if (this.stopping) return;
     const vault = this.vaultAdapter();
@@ -918,7 +1039,14 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
         onListStickerBacklinks: (target) => listStickerBacklinks(vault, target),
         onDeleteStickerBacklinks: (target) => deleteStickerBacklinks(vault, target),
         onReadSessionNote: (sessionId) => readSessionNote(vault, sessionId),
-        onSaveSessionNote: ({ document, expectedRevision }) => saveSessionNote(vault, document, expectedRevision),
+        onSaveSessionNote: ({ document, expectedRevision }) => {
+          if (!this.knowledge) throw new Error('知识登记未就绪，暂停旧贴纸写入');
+          return this.knowledge.guardedLegacySave(document.sessionId, () => saveSessionNote(vault, document, expectedRevision));
+        },
+        onKnowledge: (operation, input, instanceId) => {
+          if (!this.knowledge) throw new Error('知识登记未就绪');
+          return this.knowledge.dispatch(operation, input, instanceId);
+        },
       });
       startedBridge = bridge;
       if (this.stopping) { await bridge.close(); return; }
