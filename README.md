@@ -1,44 +1,116 @@
 # Obsidian DeepHarness Bridge
 
-当前候选版本 **0.6.4-rc2.2** 针对 DSH **0.1.5-rc.2**。升级说明与验证范围见 CHANGELOG。
+当前版本 **0.6.4-rc2.6**，面向 **DSH 0.1.5-rc.2**。这是安装在 Obsidian Vault 中的伴侣插件，提供笔记选段引用、内嵌 DSH 会话、笔记与会话双向链接、会话贴纸入口和可恢复的同步。DSH 侧需使用配套的 [Obsidian Session Reference Suite](https://github.com/linmu115/dsh-obsidian-session-reference-suite/blob/codex/rc2-session-context-graph/README.md)。
 
+## 三种不同的操作
 
-Obsidian 伴侣插件：管理本机 bridge、Vault 伴生 Markdown、选段引用和 DSH Web Viewer 回跳。
+| 操作 | 作用 | 是否加入本轮上下文 |
+| --- | --- | --- |
+| 打开关联笔记 / 打开会话 | 双向导航，定位笔记、块或完整 DSH 会话 | 否 |
+| 关联到 DSH 会话 / 创建或挂接会话贴纸 | 建立可复用关系，连接已有会话或新建真实独立会话 | 否，不自动发送 |
+| 引用到 DSH / 引用到本轮 | 把用户选择的材料加入目标会话的待发送引用气泡 | 发送并提交后，由引用流程处理 |
 
-DSH 回跳使用 Obsidian 官方协议入口 `obsidian://deepharness?...`。伴侣插件接收后只在
-Obsidian 内部打开或聚焦 loopback DSH Web Viewer。
+关联不会自动把整篇笔记灌入模型上下文。会话仍在对应 DSH 实例的 Agent 环境运行；内嵌 Viewer 是会话界面，不是另一套独立引擎。
 
-Bridge 通过 Obsidian 原生 `metadataCache` 查询引用指定贴纸块的 WikiLink，并返回笔记路径、
-标题、行列和块 ID。它不扫描外部协议文本。DSH 点击反向链接后由 Obsidian 官方 API 打开
-笔记并定位，不会为索引而改写用户笔记。打开动作只复用主编辑区的 Markdown 页签，当前
-DSH Web Viewer 页签不会被替换或关闭。
+## 从笔记引用到 DSH
 
-Obsidian Web Viewer 的专属路由身份保存在登录重定向不会清除的 URL 片段中；同一页面只初始化一次，
-因此贴纸回链和引用气泡不会在每次点击时重载 DSH，也不会被其他浏览器页面抢先消费。
+1. 在 Obsidian 的内嵌 DSH Web Viewer 中打开目标会话。
+2. 在编辑或阅读模式下选取笔记文字，选择 **引用到 DSH**。
+3. 插件先显示“等待 DSH 接收”；目标页面领取后出现待发送引用气泡。检查原草稿及引用，再自行发送问题。
+4. 引用随真实提问提交后，笔记中的 **DSH 引用** 标签可返回对应会话、提问与引用详情。同一位置有多个已提交引用时，先选择目标。
 
-Vault 是贴纸、高亮、标签和引用关系的唯一真源；插件不修改 DSH 原始会话。
+新投递只允许该 Vault 配置的内嵌 Viewer 领取。页面身份保存在登录跳转不会清除的 URL 片段中，Bridge 在读取队列、领取和重试时核对页面及实例；同一实例的独立 DSH 窗口不会抢走引用。未配置或尚未打开接收页面时，引用保留在待处理队列。
 
-引用提交后会先显示非阻塞的“等待 DSH 接收”提示，DSH 真正领取后再提示成功。删除已经提交的
-“DSH 引用”时，Obsidian 会立即移除本地引用块和关系；Bridge 保留删除墓碑，由 Core 在后台删除
-DSH 会话中的对应注释，失败会自动重试而不会恢复本地引用。删除 DSH 中尚未发送的引用气泡也会
-同步删除 Bridge 记录。只有插件自动创建、且未被其他引用或回链共享的 `dsh-note-*` 块标记会从
-笔记中移除，用户原有块 ID 不会被修改。笔记在引用后被移动也可以按唯一块标记安全定位；若出现
-重复标记，插件会停止删除并保留记录等待处理。
+内嵌页复用已有会话页面，不因每次回链或气泡点击重新加载。独立窗口仍支持已有导航、回链与删除能力。不要把 Viewer 的带认证地址复制到公开文档；常规操作通过插件入口完成。
 
-Sticker Board 复制的 Obsidian 贴纸回链使用受管 Markdown 边界。删除 DSH 贴纸时，Bridge 会先删除
-Vault 中所有对应的受管回链，并识别 0.3.18 及更早版本生成的两行链接和引用 callout。点击已经失效的
-旧回链时，Bridge 会直接清理它，不会再打开或重载 DSH。受管贴纸回链在实时预览和阅读模式中显示为
-紧凑的“DSH 贴纸”气泡；点击主体保留原有跳转，点击叉会立即移除气泡并只解除当前笔记与贴纸的双链，
-不删除贴纸本体，也不影响其他笔记中的同一贴纸回链。源码模式和非目标生命周期数据不变。
+## 关联笔记与真实会话
 
-插件自动生成的长块标记在 Obsidian 实时预览和阅读模式中显示为紧凑的“DSH 引用”标签。回答完成后
-点击标签主体会打开对应 DSH 会话、定位用户提问并打开准确的引用详情；点击叉仍然只执行双端删除。
-同一来源块关联多个已提交引用时会先显示目标选择菜单。源码模式始终保留原始 `^dsh-note-*` 文本。
+使用命令 **将当前笔记关联到会话**，或文件菜单的 **关联到 DSH 会话**。选择器先展示工作区，再按需列出会话；也可以选择 **新建独立会话并关联**。
 
-Bridge 默认使用 `127.0.0.1:18473`。通过 DSH Maintenance Engine 安装时会先检测
-Windows 端口可用性，再把同一端口写入 Obsidian 配置和 DSH 浏览器产物。
+对选段使用 **创建或挂接会话贴纸**，可建立带来源定位的会话贴纸和双链。此操作保存有界选文、来源身份与真实会话标识，不自动发起模型请求。
 
-新安装默认连接 DSH Web 的 `http://127.0.0.1:3080`。本地更新可运行
-`scripts/install-local.ps1 -VaultPath <Vault 路径>`；脚本把旧版备份放在
-`.obsidian/plugin-backups`，不会把同 ID 的备份留在 `.obsidian/plugins` 中被
-Obsidian 误识别为另一份可加载插件。
+关联后，DSH 会话输入区域显示常驻关联笔记气泡：
+
+- **在 Obsidian 打开**：回到原笔记或块。
+- **引用到本轮**：校验当前笔记材料，加入该实例、会话及引用集的待发送气泡，保留原草稿。
+
+第二种路径直接绑定当前目标，不进入自动领取队列，因此也不会被其它窗口抢走。选段已改变、来源块缺失或重复、关联解除、实例或 profile 不匹配时会明确拒绝；整篇材料超过预算时，应回到 Obsidian 选取需要的段落。
+
+笔记移动或改名后按稳定笔记/块身份解析；身份有歧义时不猜测替代来源。命令 **核对并修复会话知识链接** 会分批检查同步进度。已有引用需要转为知识网络关联时，使用 **迁移已提交引用到知识网络**，不要手改插件记录冒充迁移完成。
+
+## 双向打开与删除
+
+DSH 回跳通过 Obsidian 官方协议入口进入插件，再在 Obsidian 内打开或聚焦本机 DSH Viewer。DSH 打开笔记时使用 Obsidian API 定位，只复用主编辑区的 Markdown 页签，不替换当前 Viewer。贴纸 WikiLink 回链使用 Obsidian 的原生索引查询，不为建立索引改写用户笔记。
+
+| 删除入口 | 删除的范围 |
+| --- | --- |
+| DSH 未发送引用气泡的删除 | 取消该引用并移除 Bridge 待处理记录。 |
+| DSH 已提交引用的删除 | 解除对应引用并清理其 Obsidian 回链，保留原会话与笔记正文。 |
+| Obsidian “DSH 引用”标签的叉 | 先解除本地引用关系，再通过持久删除记录同步 Core 对应注释/引用；断线或失败后重试，不把本地引用自动恢复回来。 |
+| 某条“DSH 贴纸”回链气泡的叉 | 只解除当前笔记与该贴纸的双链，不删除贴纸本体或其它笔记中的同一贴纸回链。 |
+| 笔记与会话关联的解除 | 解除该关联，不删除笔记或会话，也不代替其它独立引用的删除。 |
+
+### 共享 Owned 标记的清理
+
+插件创建的 `^dsh-note-*` 定位标记会在实时预览和阅读模式显示为紧凑的“DSH 引用”标签；源码模式保留原始块标记。
+
+**删除一条引用不一定删除该位置的标记。** 有效引用、已提交回链、尚在选择的引用，以及未解除的笔记/会话关联，都可能共同使用该位置。只有最后一个对应使用方解除后，插件才清理自己创建且保留了归属记录的 Owned 标记。
+
+- 用户已有块 ID 不会被清理。
+- 清理失败会保留记录，重试或重载后继续核对。
+- 标记重复、定位有歧义时停止删除，不猜测来源。
+- 原笔记存在但标记已消失时，不会到其它笔记删除同名标记。
+- 对升级前已经丢失归属信息的孤立标记，不仅凭名称推断它属于插件。
+
+机制和验证范围见[共享标记清理说明](docs/2026-09-14-shared-marker-cleanup.md)。
+
+## 数据保存在哪里
+
+当前 Maintenance 集成流程中，**会话、已迁入的贴纸、知识链接及图结构以 Maintenance 为结构真源；Vault 继续拥有笔记正文。**
+
+Companion 保存稳定笔记身份、链接回执、同步进度、待处理引用、删除记录及 Owned 标记归属，用于完成跨应用投递和恢复。笔记里保留需要的可见回链、块定位与伴生 Markdown；这些内容不是另一套完整会话历史。知识登记不会为每个关联或每轮操作复制整篇笔记、全库正文或会话快照。
+
+尚未迁移的旧伴生贴纸数据保留兼容路径。迁移通过冻结旧写入、导入、核对回执后启用新所有者的流程完成，不能把“Maintenance 为真源”理解为可以直接删除旧文件。
+
+## 安装与设置
+
+本仓库提供源码和本地打包/安装脚本；当前版本号不代表已经存在可下载的 npm 或 GitHub Release 包。准备对应构件后，可用整套维护部署流程安装，或从本仓库构建后执行：
+
+```powershell
+.\scripts\install-local.ps1 -VaultPath "D:\MyVault"
+```
+
+请把示例替换为实际 Vault，并先完成下文构建。脚本要求 Vault 中已有 `.obsidian` 目录，安装到 `.obsidian/plugins/obsidian-deepharness-bridge`，原插件备份存入 `.obsidian/plugin-backups`。备份不放在可加载插件目录中。更新后重新加载伴侣插件。
+
+在 Obsidian **设置 → DeepHarness Bridge** 中配置并点击 **应用**：
+
+| 设置 | 说明 |
+| --- | --- |
+| DSH Web 地址 | 本机 DSH Web origin，默认初始值为 `http://127.0.0.1:3080`；应与实际实例一致，不是 Bridge 地址。 |
+| DSH 启动日志 | 可选。需要时从包含 `dsh web:` 的本机日志获取当前登录地址。 |
+| Bridge 端口 | 默认 `18473`，本机监听；应与 DSH Lifecycle 的 `bridgeOrigin` 端口一致。 |
+| 伴生笔记目录 | 默认 `DeepHarness`，用于伴生笔记。 |
+
+配套 Lifecycle 会提供真实 Web 服务的当前 Viewer 地址与实例身份，适配 Launcher 动态端口。页面身份由插件管理，不需要手工复制到多个窗口。DSH 的 Lifecycle、Core、Reference Adapter 和 Maintenance 必须使用同一目标实例/profile，具体版本与配置见 [Suite README](https://github.com/linmu115/dsh-obsidian-session-reference-suite/blob/codex/rc2-session-context-graph/README.md)。
+
+如果投递没有完成，先检查两端连接。Obsidian 设置中的 **待处理引用** 和 **引用同步** 支持查看状态、打开笔记、重试与丢弃；DSH 的 Better Sidebar **Obsidian** 面板也有对应状态和重试。不要删除记录来绕过错误或创建第二个 Bridge 争抢同一端口。
+
+## 从源码构建
+
+使用 [package.json](package.json) 指定的 pnpm。当前依赖包含本地 Protocol/Core 归档以及 Maintenance contracts 的链接；需先准备对应路径和构建输出，或在开发分支更新依赖路径与锁文件。新机器上的 `pnpm install` 不会凭空生成这些本机构件。
+
+依赖准备好后，在本仓库目录执行：
+
+```powershell
+pnpm install --frozen-lockfile
+pnpm typecheck
+pnpm test
+pnpm build
+pnpm package:companion
+```
+
+`package:companion` 使用已构建的 `main.js`，输出 `.artifacts/obsidian-deepharness-bridge-0.6.4-rc2.6.tgz`；不会自动部署 Vault。整套源码链接和组合核对流程见 Suite。
+
+本版同版本号可能对应后续修复构建，复现和部署应核对实际构件摘要及安装收据。自动测试使用合成笔记与会话；真实内嵌页面、双应用点击、模型应答及 Vault 性能应以相应部署验收记录为准。
+
+更多说明：[CHANGELOG](CHANGELOG.md)、[关联笔记与按需引用](docs/2026-09-14-linked-note-rail.md)、[内嵌接收页面隔离](docs/changes/2026-09-13-obsidian-viewer-routing.md)和[结构同步与来源定位修复](docs/changes/2026-09-14-system-audit-fixes.md)。
