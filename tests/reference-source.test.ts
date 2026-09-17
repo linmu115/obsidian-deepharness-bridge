@@ -31,6 +31,38 @@ function capture(markdown = original) {
 }
 
 describe("Obsidian reference source snapshots", () => {
+  it.each([
+    'first line ^dsh-note-test\nsecond line\n',
+    'first line\nsecond line ^dsh-note-test\n',
+    'first line ^dsh-note-other\nsecond line ^dsh-note-test\n',
+  ])('refreshes a multiline selection anchored by either capture mode: %s', async markdown => {
+    const value = createObsidianReferenceCapture({ actionId:'a', referenceId:'r', vaultId:'v', notePath:path,
+      blockId:'dsh-note-test', occurrence:0, selectedText:'first line\nsecond line', markdown, capturedAt:100 });
+    const reader = new MemoryReader(new Map([[path, markdown + '\nUnrelated append\n']]));
+    expect(await refreshObsidianReference(reader, value)).toMatchObject({kind:'refreshed'});
+    reader.files.set(path, markdown.replace('first line', 'edited line'));
+    expect(await refreshObsidianReference(reader, value)).toEqual({kind:'blocked',reason:'selection-changed'});
+  });
+
+  it('ignores only trailing Bridge markers while keeping the selected text and identity', async () => {
+    const markdown = 'first line\nsecond line ^dsh-note-test\n';
+    const value = createObsidianReferenceCapture({ actionId:'a', referenceId:'r', vaultId:'v', notePath:path,
+      blockId:'dsh-note-test', occurrence:0, selectedText:'first line\nsecond line', markdown, capturedAt:100 });
+    const reader = new MemoryReader(new Map([[path, markdown.replace('first line', 'first line ^dsh-note-new')]]));
+    expect(await refreshObsidianReference(reader, value)).toMatchObject({kind:'refreshed',source:{selectedText:value.source.selectedText,locator:value.source.locator}});
+    reader.files.set(path, markdown.replace('first line', 'first line ^dsh-note-new real content'));
+    expect(await refreshObsidianReference(reader, value)).toEqual({kind:'blocked',reason:'selection-changed'});
+  });
+
+  it('does not recover the quote from a different block or guess between occurrences', async () => {
+    const value = capture();
+    const elsewhere = '# title\nchanged block ^generation-definition\nGeneration 保存完整组合。\n';
+    expect(await refreshObsidianReference(new MemoryReader(new Map([[path, elsewhere]])), value))
+      .toEqual({kind:'blocked',reason:'selection-changed'});
+    const duplicateBefore = 'Generation 保存完整组合。\n\n' + original;
+    expect(await refreshObsidianReference(new MemoryReader(new Map([[path, duplicateBefore]])), value))
+      .toEqual({kind:'blocked',reason:'ambiguous'});
+  });
   it("follows a uniquely indexed moved note without changing its stable block identity", async () => {
     const moved = "Moved/source.md";
     const reader: ReferenceVaultReader = {

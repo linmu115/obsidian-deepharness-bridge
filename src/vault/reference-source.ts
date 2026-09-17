@@ -67,15 +67,27 @@ function escapeRegExp(value: string): string {
 }
 
 export function occurrenceAtBlock(markdown: string, selectedText: string, blockId: string): number | undefined {
-  const source = normalizeSourceText(markdown);
-  const marker = new RegExp(`(?:^|\\s)\\^${escapeRegExp(blockId)}\\s*$`, "m").exec(source);
-  if (!marker) return undefined;
-  const lineStart = source.lastIndexOf("\n", marker.index) + 1;
-  const lineEndAt = source.indexOf("\n", marker.index);
-  const lineEnd = lineEndAt < 0 ? source.length : lineEndAt;
-  const offsets = selectionOffsets(source, selectedText);
-  const matchIndex = offsets.findIndex((offset) => offset >= lineStart && offset + normalizeSourceText(selectedText).length <= lineEnd);
-  return matchIndex < 0 ? undefined : matchIndex;
+  const lines = normalizeSourceText(markdown).split('\n');
+  const marker = new RegExp(`(?:^|[ \\t])\\^${escapeRegExp(blockId)}[ \\t]*$`);
+  const markerLines = lines.flatMap((line, index) => marker.test(line) ? [index] : []);
+  if (markerLines.length !== 1) return undefined;
+  // Keep line boundaries and ordinary text intact. Only Bridge-owned trailing
+  // markers (or this capture's exact block marker) are layout metadata.
+  const metadata = new RegExp(`(?:^|[ \\t]+)\\^(?:dsh-note-[A-Za-z0-9-]+|${escapeRegExp(blockId)})[ \\t]*(?=\\n|$)`, 'gm');
+  const clean = (text: string): string => normalizeSourceText(text).replace(metadata, '');
+  const source = clean(lines.join('\n'));
+  const selected = clean(selectedText).trim();
+  const markerLine = markerLines[0]!;
+  const offsets = selectionOffsets(source, selected);
+  const lineSpan = selected.split('\n').length - 1;
+  let firstLine = 0, newline = source.indexOf('\n');
+  const matches = offsets.flatMap((offset, index) => {
+    while (newline >= 0 && newline < offset) { firstLine++; newline = source.indexOf('\n', newline + 1); }
+    const lastLine = firstLine + lineSpan;
+    // Reading view anchors the first selected line, editor view the last.
+    return firstLine <= markerLine && markerLine <= lastLine ? [index] : [];
+  });
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 export function createObsidianReferenceCapture(input: CreateReferenceCaptureInput): ObsidianReferenceCaptureV2 {
@@ -124,7 +136,8 @@ export async function refreshObsidianReference(
       ? { kind: "blocked", reason: "selection-changed" }
       : { kind: "blocked", reason: "block-missing" };
   }
-  if (occurrence !== capture.source.locator.occurrence) return { kind: "blocked", reason: "ambiguous" };
+  const originalOccurrence = occurrenceAtBlock(capture.source.snapshot.markdown, capture.source.selectedText, capture.source.locator.blockId);
+  if (occurrence !== (originalOccurrence ?? capture.source.locator.occurrence)) return { kind: "blocked", reason: "ambiguous" };
   return {
     kind: "refreshed",
     source: {
