@@ -1,6 +1,6 @@
 {
   "name": "obsidian-deepharness-bridge",
-  "version": "0.6.4-rc2.6",
+  "version": "0.6.4-rc2.7",
   "private": true,
   "description": "Obsidian companion bridge for DeepSeek Harness conversations",
   "dshKnowledge": {
@@ -60,7 +60,7 @@
     "package:companion": "node scripts/package-companion.mjs"
   },
   "dependencies": {
-    "dsh-obsidian-bridge-protocol": "file:C:/Users/19717/OneDrive/文档/ChatGPT/dsh/.artifacts/rc2-profile-candidate/dsh-obsidian-bridge-protocol-0.3.3-rc2.1.tgz",
+    "dsh-obsidian-bridge-protocol": "file:C:/Users/19717/OneDrive/鏂囨。/ChatGPT/dsh/.artifacts/rc2-profile-candidate/dsh-obsidian-bridge-protocol-0.3.3-rc2.1.tgz",
     "zod": "4.4.3"
   },
   "devDependencies": {

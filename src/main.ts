@@ -656,9 +656,9 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
 
   private async refreshReferenceNow(request: ReferenceRefreshRequestV2): Promise<ReferenceRefreshResultV2> {
     const { index, record } = this.findCapture(request.referenceId);
-    if (record.capture.source.snapshot.documentHash !== request.knownDocumentHash) {
-      throw codedError("SOURCE_CHANGED", "DSH requested refresh from an unknown snapshot");
-    }
+    // A refresh may have succeeded before DSH rejected submission (e.g. budget),
+    // or before its response arrived. Revalidate the anchored selection, then
+    // return the current source to a caller retrying with an older snapshot.
     const result = await refreshObsidianReference(this.vaultAdapter(), record.capture);
     if (result.kind === "refreshed") {
       const pendingReferences = [...this.data.pendingReferences];
@@ -684,7 +684,9 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
       this.data = { ...rememberOwnedMarkers(this.data), pendingReferences };
       await this.persist();
     }
-    return result;
+    return result.kind === "unchanged" && result.source.snapshot.documentHash !== request.knownDocumentHash
+      ? { ...result, kind: "refreshed" }
+      : result;
   }
 
   private async commitBacklink(commit: BacklinkCommitV2) {

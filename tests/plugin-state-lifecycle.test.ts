@@ -98,6 +98,20 @@ beforeEach(() => { vi.stubGlobal("document", {}); vi.mocked(ensureDshWebViewer).
 afterEach(async () => { await Promise.all(opened.splice(0).map((plugin) => plugin.shutdown())); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe("plugin state persistence and lifecycle", () => {
+  it("refreshes a stale DSH snapshot after failed submission and after plugin reload", async () => {
+    const original = claimed("retry"); const first = fixture([original]);
+    first.put("retry.md", "new context\nquote ^dsh-note-retry\n");
+    const request = { annotationProtocolVersion: 2 as const, type: "reference-refresh" as const, referenceId: "retry", knownDocumentHash: original.capture.source.snapshot.documentHash };
+    const refreshed = await first.internals.refreshReference(request);
+    expect(refreshed.kind).toBe("refreshed");
+    expect(await first.internals.refreshReference(request)).toEqual(refreshed);
+    const next = fixture(structuredClone(first.internals.data.pendingReferences));
+    expect(await next.internals.refreshReference(request)).toEqual(refreshed);
+    next.put("retry.md", "new context\nchanged selection ^dsh-note-retry\n");
+    expect(await next.internals.refreshReference(request)).toEqual({ kind: "blocked", reason: "selection-changed" });
+    await expect(next.internals.refreshReference({ ...request, referenceId: "missing" })).rejects.toThrow();
+  });
+
   it('retains only marker ownership across restart until the last association is removed', async () => {
     const first = fixture([claimed('a', 'plugin-created')]);
     first.internals.knowledge = { referencesBlock: () => true };
