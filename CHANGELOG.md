@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.0-rc2.3 — 2026-09-18
+
+Add a local-process-only Vault location proof for Maintenance folder selection. Resolve the desktop Vault adapter root with realpath and return the existing live discovery identity separately from the strict public identity schema. Reject browser Origins, cross-site fetches, forged Host headers and non-loopback callers; fail safely during shutdown or unavailable filesystem resolution without exposing paths in errors. No Vault data is written.
+
 ## 0.7.0-rc2.2 — 2026-09-18
 
 Use desktop HTTP for DSH identity verification so authenticated Vault binding works inside Obsidian even when renderer CORS rejects the request. Preserve loopback validation, no redirects, a total deadline, bounded response bodies and identity checks. Existing Vault data and binding CAS behavior are unchanged.

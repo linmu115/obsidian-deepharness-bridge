@@ -1,4 +1,5 @@
-import { editorLivePreviewField, MarkdownView, Menu, Notice, Plugin } from "obsidian";
+import { editorLivePreviewField, FileSystemAdapter, MarkdownView, Menu, Notice, Plugin } from "obsidian";
+import { canonicalVaultRoot } from './bridge/vault-location.ts';
 import { join } from 'node:path';
 import { VaultKnowledgeStore } from './vault/knowledge-store.ts';
 import type { LocalKnowledgeLink } from './vault/knowledge-store.ts';
@@ -1231,6 +1232,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
     let startedBridge: RunningBridge | undefined;
     try {
       const bridge = await startBridgeServer({
+        vaultRoot: () => canonicalVaultRoot(this.app.vault.adapter instanceof FileSystemAdapter ? this.app.vault.adapter : undefined),
         onControllerReady: () => this.scheduleKnowledgeSync(),
         ...(this.binding ? { binding: this.binding, discoveryIdentity: () => this.discoveryIdentity(), jobRoute: (actionId: string) => this.data.jobRoutes?.[actionId] } : {}),
         autoPort: true,

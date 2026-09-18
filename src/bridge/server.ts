@@ -61,6 +61,7 @@ import { ClientActionQueue, type QueuedBridgeMessage } from "./queue.ts";
 import { KeyedSerialWork } from "../serial-work.ts";
 import { BINDING_CAPABILITY, VAULT_BINDING_PATH, VAULT_IDENTITY_PATH, changeVaultBindingRequestSchema, type BoundOperationRoute, type VaultIdentity } from 'dsh-obsidian-bridge-protocol/binding';
 import type { VaultBindingProvider } from '../binding/provider.ts';
+import { isLocalLocationCaller, VAULT_LOCATION_PATH } from './vault-location.ts';
 
 interface TokenRecord {
   bindingRevision?: number;
@@ -86,6 +87,7 @@ export interface SaveSessionNoteRequest {
 export interface BridgeServerOptions {
   binding?: VaultBindingProvider;
   discoveryIdentity?: () => VaultIdentity;
+  vaultRoot?: () => Promise<string>;
   jobRoute?: (actionId: string) => BoundOperationRoute | undefined;
   autoPort?: boolean;
   onControllerReady?: () => void;
@@ -351,6 +353,27 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
     let countedWorkRequest = false;
     void (async () => {
       const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
+      if (requestUrl.pathname === VAULT_LOCATION_PATH) {
+        // This endpoint is deliberately outside public identity and browser CORS.
+        if (!isLocalLocationCaller(request, listeningOrigin)) {
+          json(response, 403, { error: 'Local host access is required', code: 'VAULT_LOCATION_FORBIDDEN' }); return;
+        }
+        if (request.method !== 'GET') {
+          json(response, 405, { error: 'Method is not allowed', code: 'METHOD_NOT_ALLOWED' }); return;
+        }
+        try {
+          if (closed || lifecycleState !== 'READY' || !options.vaultRoot || !options.discoveryIdentity) throw new Error();
+          inFlightRequestCount++; countedWorkRequest = true;
+          const vaultRoot = await options.vaultRoot();
+          const published = options.discoveryIdentity();
+          if (closed || lifecycleState !== 'READY' || published.bootId !== identity.bootId || published.origin !== listeningOrigin) throw new Error();
+          json(response, 200, { locationProtocolVersion: 1, vaultId: published.vaultId, publisherId: published.publisherId,
+            bootId: published.bootId, origin: published.origin, vaultRoot });
+        } catch {
+          json(response, 503, { error: 'Vault location is unavailable', code: 'VAULT_LOCATION_UNAVAILABLE' });
+        }
+        return;
+      }
       const originHeader = request.headers.origin;
       const requestOrigin = typeof originHeader === "string" ? originHeader : undefined;
       const allowedOrigin = requestOrigin && isAllowedBrowserOrigin(requestOrigin) ? requestOrigin : undefined;
