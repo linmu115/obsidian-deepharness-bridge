@@ -85,6 +85,9 @@ import { resolveDshViewerUrl } from "./webviewer/launch-url.ts";
 import { ObsidianMainMarkdownWorkspace } from "./workspace/obsidian-adapter.ts";
 import { openNoteInMainMarkdownLeaf } from "./workspace/open-note.ts";
 import { resolveReferenceNote } from './workspace/resolve-reference-note.ts';
+import { VaultBindingProvider } from './binding/provider.ts';
+import { discoverInstances, publishVault } from './binding/discovery.ts';
+import { BINDING_CAPABILITY, type ChangeVaultBindingRequest, type VaultBindingSnapshot, type VaultIdentity } from 'dsh-obsidian-bridge-protocol/binding';
 import {
   acknowledgeReferenceDelete,
   localDeleteCommit,
@@ -106,6 +109,9 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
   settings: DeepHarnessBridgeSettings = { ...DEFAULT_SETTINGS };
   bridgeStatus = "未启动";
   private bridge: RunningBridge | null = null;
+  private binding: VaultBindingProvider | undefined;
+  private stopDiscovery: (() => Promise<void>) | undefined;
+  private readonly publisherId = crypto.randomUUID();
   private readonly stateWork = new SerialWork();
   private readonly lifecycleWork = new SerialWork();
   private stopping = false;
@@ -166,6 +172,9 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
     this.data = { ...this.data, settings: this.settings };
     await this.mutate(() => this.persist());
     if (this.stopping) return;
+    this.binding = new VaultBindingProvider(this.data.vaultId, state => this.mutate(async () => {
+      this.data = { ...this.data, bindingState: state }; await this.persist();
+    }), this.data.bindingState);
     await this.startKnowledge();
 
     const chipActions = {
@@ -263,7 +272,36 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
   }
 
   private resolveDshViewerUrl(): Promise<string> {
+    if (this.binding) {
+      if (!this.binding.snapshot().target) return Promise.reject(new Error('请先在 Bridge 设置中为此 Vault 绑定实例'));
+      const url = this.bridge?.activeDshViewerUrl();
+      if (!url) return Promise.reject(new Error('绑定实例当前未连接，历史地址不会替代它'));
+      return Promise.resolve(url);
+    }
     return resolveDshViewerUrl(this.settings, undefined, this.bridge?.activeDshViewerUrl());
+  }
+
+  bindingSnapshot(): VaultBindingSnapshot | undefined { return this.binding?.snapshot(); }
+  discoverInstances(manualOrigin?: string) { return discoverInstances(manualOrigin); }
+  async changeVaultBinding(request: ChangeVaultBindingRequest): Promise<VaultBindingSnapshot> {
+    if (!this.binding) throw new Error('绑定服务尚未就绪');
+    const result = await this.binding.change(request);
+    // Publish confirmation promptly; existing connections are fenced by the provider event.
+    await this.refreshDiscovery();
+    return result;
+  }
+  private discoveryIdentity(): VaultIdentity {
+    if (!this.bridge || !this.binding) throw new Error('Bridge discovery 尚未就绪');
+    return { discoveryProtocolVersion: 1, kind: 'vault', vaultId: this.data.vaultId, publisherId: this.publisherId,
+      bootId: this.bridge.identity.bootId, displayName: this.app.vault.getName(), origin: this.bridge.origin,
+      capabilities: [BINDING_CAPABILITY, 'reference-channel-v1'], binding: this.binding.snapshot() };
+  }
+  private async refreshDiscovery(): Promise<void> {
+    await this.stopDiscovery?.(); this.stopDiscovery = undefined;
+    if (this.bridge && this.binding && !this.stopping) {
+      try { this.stopDiscovery = await publishVault(() => this.discoveryIdentity(), error => console.warn('[obsidian-deepharness-bridge] discovery unavailable', error)); }
+      catch (error) { this.lastOperationError = '本机发现暂不可用，可使用实际 Bridge 地址手动连接'; console.warn('[obsidian-deepharness-bridge] discovery unavailable', error); }
+    }
   }
 
   async updateSettings(patch: Partial<DeepHarnessBridgeSettings>): Promise<void> {
@@ -287,6 +325,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
       });
       if (restart && !this.stopping) {
         const old = this.bridge;
+        await this.stopDiscovery?.(); this.stopDiscovery = undefined;
         this.bridge = null;
         this.bridgeStatus = "正在应用连接设置";
         await old?.close();
@@ -303,6 +342,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
     this.bridgeStatus = "正在关闭";
     this.shutdownPromise = this.lifecycleWork.run(async () => {
       const bridge = this.bridge;
+      await this.stopDiscovery?.(); this.stopDiscovery = undefined;
       this.bridge = null;
       await bridge?.close();
       await this.stateWork.drain();
@@ -400,6 +440,15 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
   }
 
   private async persist(): Promise<void> {
+    if (this.binding && this.persistedData && this.binding.snapshot().target) {
+      const oldActions = new Set([...this.persistedData.pendingReferences.flatMap(record => record.state === 'needs-reselect' ? [] : [record.capture.actionId]), ...this.persistedData.referenceDeleteRequests.map(request => request.actionId)]);
+      const routes = { ...this.data.jobRoutes };
+      const route = this.binding.route();
+      for (const job of [...this.data.pendingReferences.flatMap(record => record.state === 'needs-reselect' ? [] : [record.capture]), ...this.data.referenceDeleteRequests]) {
+        if (!oldActions.has(job.actionId) && job.dshInstanceId === route.instanceId && !routes[job.actionId]) routes[job.actionId] = route;
+      }
+      this.data = { ...this.data, jobRoutes: routes };
+    }
     this.data = { ...rememberOwnedMarkers(this.data), settings: this.settings };
     await this.saveData(this.data);
     this.persistedData = this.data;
@@ -442,7 +491,11 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
       + (this.lastOperationError ? `。需要处理：${this.lastOperationError}` : "");
   }
 
-  referenceStatus(referenceId: string): "synced" | "deleting" | "pending" {
+  referenceStatus(referenceId: string): "synced" | "deleting" | "pending" | "binding-paused" {
+    const job = this.data.referenceDeleteRequests.find(request => request.referenceId === referenceId)
+      ?? this.data.pendingReferences.flatMap(record => record.state === 'needs-reselect' ? [] : [record.capture]).find(capture => capture.referenceId === referenceId);
+    if (this.binding && job && !this.data.backlinkReceipts.some(receipt => receipt.referenceId === referenceId)
+      && !this.binding.accepts(this.data.jobRoutes?.[job.actionId])) return 'binding-paused';
     if (this.data.referenceDeleteRequests.some((request) => request.referenceId === referenceId)) return "deleting";
     return this.data.backlinkReceipts.some((receipt) => receipt.referenceId === referenceId) ? "synced" : "pending";
   }
@@ -547,7 +600,8 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
   }
 
   private openViewerForPendingReferences(): void {
-    const hasQueued = () => !this.stopping && this.data.pendingReferences.some((record) => record.state === "queued");
+    const hasQueued = () => !this.stopping && this.data.pendingReferences.some((record) => record.state === "queued"
+      && (!this.binding || this.binding.accepts(this.data.jobRoutes?.[record.capture.actionId])));
     if (this.viewerOperation || !hasQueued()) return;
     // Navigation is an optional wake-up for an already durable outbox. Never
     // hold the state lock while a Web Viewer waits for a stopped DSH server.
@@ -565,6 +619,10 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
   }
 
   private async queueReferenceNow(selection: NoteSelection): Promise<void> {
+    if (this.binding && !this.binding.snapshot().target) {
+      await this.rollbackSelectionMarker(selection);
+      throw codedError('BINDING_REQUIRED', '请先在 Bridge 设置中绑定实例，再选择原文引用');
+    }
     const {
       requiresBlockIdWrite: _requiresBlockIdWrite,
       blockIdOwnership,
@@ -775,6 +833,8 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
   }
 
   private async prepareDshTarget(action: DeepLinkAction): Promise<boolean> {
+    if (this.binding && action.dshInstanceId !== this.binding.route().instanceId)
+      throw codedError('BINDING_MISMATCH', action.dshInstanceId ? '此历史链接属于其他实例，当前绑定不会改写它' : '此旧链接尚未核验实例归属，请先单独维护该链接');
     if (action.stickerId === undefined || action.quoteHash === undefined) return true;
     if (action.logicalSessionId !== undefined) return true;
     const vault = this.vaultAdapter();
@@ -956,8 +1016,13 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
   }
 
   private async knowledgeClient(): Promise<KnowledgeRequest> {
+    const route = this.binding?.route();
+    if (this.binding && !this.binding.supports('maintenance-knowledge-v1')) throw new Error('绑定实例当前未提供 Maintenance 知识能力');
     const origin = new URL(await this.resolveDshViewerUrl()).origin, surfaceId = this.settings.webViewerSurfaceId;
-    return <T>(operation: string, input: Record<string, unknown> = {}) => requestViewerKnowledge<T>(this.app, origin, surfaceId, operation, input);
+    return <T>(operation: string, input: Record<string, unknown> = {}) => {
+      if (this.binding && !this.binding.accepts(route)) return Promise.reject(codedError('BINDING_MISMATCH', '绑定已变化，旧操作已暂停'));
+      return requestViewerKnowledge<T>(this.app, origin, surfaceId, operation, input);
+    };
   }
 
   private async startKnowledge(): Promise<void> {
@@ -1091,6 +1156,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
 
   private scheduleKnowledgeSync(delay = 250): void {
     if (this.stopping) return;
+    if (this.binding && !this.binding.supports('maintenance-knowledge-v1')) return;
     clearTimeout(this.knowledgeSyncTimer);
     this.knowledgeSyncTimer = setTimeout(() => { void this.syncKnowledgeLinks().catch(error => this.knowledgeSyncError(error)); }, delay);
   }
@@ -1165,6 +1231,9 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
     let startedBridge: RunningBridge | undefined;
     try {
       const bridge = await startBridgeServer({
+        onControllerReady: () => this.scheduleKnowledgeSync(),
+        ...(this.binding ? { binding: this.binding, discoveryIdentity: () => this.discoveryIdentity(), jobRoute: (actionId: string) => this.data.jobRoutes?.[actionId] } : {}),
+        autoPort: true,
         port: this.settings.bridgePort,
         allowedDshOrigins: [this.settings.dshOrigin],
         instanceId: this.data.vaultId,
@@ -1203,6 +1272,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
       startedBridge = bridge;
       if (this.stopping) { await bridge.close(); return; }
       this.bridge = bridge;
+      await this.refreshDiscovery();
       await this.mutate(async () => {
         for (const record of this.data.pendingReferences) {
           if (record.state === "queued") bridge.enqueue(record.capture);

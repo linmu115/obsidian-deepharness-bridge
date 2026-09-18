@@ -5,7 +5,7 @@ export interface PendingReferenceListOwner {
   releaseMigratedReference(referenceId: string): Promise<void>;
   discardReference(referenceId: string): Promise<void>;
   openReferenceNote(record: PendingReferenceRecord): Promise<void>;
-  referenceStatus?(referenceId: string): "synced" | "deleting" | "pending";
+  referenceStatus?(referenceId: string): "synced" | "deleting" | "pending" | "binding-paused";
 }
 
 export interface PendingReferenceRow {
@@ -43,7 +43,8 @@ export function buildPendingReferenceRows(owner: PendingReferenceListOwner): Pen
     const notePath = record.state === "needs-reselect"
       ? legacyNotePath(record)
       : record.capture.source.locator.notePath;
-    const description = status === "deleting" ? "删除正在等待 DSH 确认；重试待处理操作可继续恢复。"
+    const description = status === 'binding-paused' ? '此记录属于旧绑定或尚未核验实例，已暂停投递；原身份保留，不会改投当前实例。'
+      : status === "deleting" ? "删除正在等待 DSH 确认；重试待处理操作可继续恢复。"
       : record.state === "queued" ? "等待 DSH 接收。请打开 DSH 会话；连接恢复后会继续处理。"
       : record.state === "claimed" ? "DSH 已接收，等待随提问写回。尚未发送时可取消。"
       : record.state === "migrated-ready"
@@ -55,8 +56,8 @@ export function buildPendingReferenceRows(owner: PendingReferenceListOwner): Pen
       title: notePath ?? `引用 ${referenceId}`,
       description,
       canOpen: notePath !== undefined,
-      canRelease: record.state === "migrated-ready",
-      canDiscard: status !== "deleting",
+      canRelease: record.state === "migrated-ready" && status !== 'binding-paused',
+      canDiscard: status !== "deleting" && status !== 'binding-paused',
       open: () => owner.openReferenceNote(record),
       release: () => owner.releaseMigratedReference(referenceId),
       discard: () => owner.discardReference(referenceId),

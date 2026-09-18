@@ -12,6 +12,8 @@ import {
 } from "../protocol.ts";
 import type { DeepHarnessBridgeSettings } from "../settings.ts";
 import { z } from "zod";
+import { boundOperationRouteSchema, vaultBindingSnapshotSchema, type BoundOperationRoute } from 'dsh-obsidian-bridge-protocol/binding';
+import type { StoredBindingState } from '../binding/provider.ts';
 import { createObsidianReferenceCapture, occurrenceAtBlock } from "../vault/reference-source.ts";
 
 export interface LegacyPendingCitationV1 {
@@ -47,6 +49,8 @@ export type PendingReferenceRecord =
     };
 
 export interface StoredPluginDataV2 {
+  bindingState?: StoredBindingState;
+  jobRoutes?: Record<string, BoundOperationRoute>;
   dataVersion: 2;
   vaultId: string;
   settings: DeepHarnessBridgeSettings;
@@ -131,6 +135,8 @@ function validateV2(value: StoredPluginDataV2): StoredPluginDataV2 {
     backlinkReceipts: value.backlinkReceipts.map((receipt) => BacklinkReceiptV2Schema.parse(receipt)),
     referenceDeleteRequests: (value.referenceDeleteRequests ?? []).map((request) => ReferenceDeleteRequestV2Schema.parse(request)),
     ownedMarkers: (value.ownedMarkers ?? []).map(marker => ownedMarkerSchema.parse(marker)),
+    ...(value.bindingState ? { bindingState: { snapshot: vaultBindingSnapshotSchema.parse(value.bindingState.snapshot), receipts: value.bindingState.receipts ?? {} } } : {}),
+    ...(value.jobRoutes ? { jobRoutes: Object.fromEntries(Object.entries(value.jobRoutes).map(([id, route]) => [id, boundOperationRouteSchema.parse(route)])) } : {}),
   };
 }
 

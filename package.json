@@ -1,6 +1,6 @@
 {
   "name": "obsidian-deepharness-bridge",
-  "version": "0.6.4-rc2.7",
+  "version": "0.7.0-rc2.1",
   "private": true,
   "description": "Obsidian companion bridge for DeepSeek Harness conversations",
   "dshKnowledge": {
@@ -48,7 +48,8 @@
     "CHANGELOG.md",
     "README.md",
     "LICENSE",
-    "scripts"
+    "scripts",
+    "docs/changes"
   ],
   "scripts": {
     "build": "tsdown --config-loader unrun --config tsdown.config.ts",
@@ -60,7 +61,7 @@
     "package:companion": "node scripts/package-companion.mjs"
   },
   "dependencies": {
-    "dsh-obsidian-bridge-protocol": "file:C:/Users/19717/OneDrive/鏂囨。/ChatGPT/dsh/.artifacts/rc2-profile-candidate/dsh-obsidian-bridge-protocol-0.3.3-rc2.1.tgz",
+    "dsh-obsidian-bridge-protocol": "link:../dsh-obsidian-bridge-protocol",
     "zod": "4.4.3"
   },
   "devDependencies": {
@@ -68,7 +69,7 @@
     "@codemirror/view": "6.38.6",
     "@types/jsdom": "21.1.7",
     "@types/node": "^24.3.0",
-    "dsh-annotation-core": "file:D:/AI/DeepSeekHarness-Plugin/artifacts/system-fixes-20260914/dsh-annotation-core-0.3.12-rc2.7.tgz",
+    "dsh-annotation-core": "link:../../session-context-graph-20260913/dsh-annotation-core",
     "jsdom": "26.1.0",
     "obsidian": "^1.13.1",
     "tar": "^7.5.1",

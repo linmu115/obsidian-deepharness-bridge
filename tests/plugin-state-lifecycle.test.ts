@@ -30,6 +30,7 @@ vi.mock("obsidian", async () => {
   };
 });
 vi.mock("../src/bridge/server.ts", () => ({ startBridgeServer: vi.fn() }));
+vi.mock('../src/binding/discovery.ts', () => ({ discoverInstances: vi.fn(async () => ({ instances: [], conflicts: 0 })), publishVault: vi.fn(async () => async () => undefined) }));
 vi.mock('../src/vault/knowledge-file.ts', () => ({ knowledgeFile: () => ({ readState: async () => null, writeState: async () => undefined }) }));
 vi.mock("../src/ui/block-id-display.ts", () => ({
   compactRenderedDshBlockIds: vi.fn(), createDshBlockIdCompactExtension: vi.fn(), hideRenderedDshReferenceBlocks: vi.fn(),

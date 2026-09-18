@@ -132,7 +132,7 @@ export class VaultKnowledgeStore {
         const query = typeof input.query === 'string' ? input.query.slice(0,200).toLowerCase() : '';
         const after = typeof input.after === 'string' ? input.after : '';
         const paths = this.io.listPaths().filter(p => p > after && p.toLowerCase().includes(query)).sort().slice(0,31);
-        return { items: paths.slice(0,30).map(path => ({ notePath: path })), nextCursor: paths.length > 30 ? paths[29] : null };
+        return { vaultId: this.vaultId, items: paths.slice(0,30).map(path => ({ notePath: path, vaultId: this.vaultId })), nextCursor: paths.length > 30 ? paths[29] : null };
       }
       if (operation === 'note-register') return this.identity(notePath.parse(input.notePath));
       if (operation === 'note-resolve' || operation === 'note-open') {

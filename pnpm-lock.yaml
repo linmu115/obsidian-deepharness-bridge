@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       dsh-obsidian-bridge-protocol:
-        specifier: file:C:/Users/19717/OneDrive/文档/ChatGPT/dsh/.artifacts/rc2-profile-candidate/dsh-obsidian-bridge-protocol-0.3.3-rc2.1.tgz
-        version: file:C:/Users/19717/OneDrive/文档/ChatGPT/dsh/.artifacts/rc2-profile-candidate/dsh-obsidian-bridge-protocol-0.3.3-rc2.1.tgz
+        specifier: link:../dsh-obsidian-bridge-protocol
+        version: link:../dsh-obsidian-bridge-protocol
       zod:
         specifier: 4.4.3
         version: 4.4.3
@@ -31,8 +31,8 @@ importers:
         specifier: ^24.3.0
         version: 24.13.3
       dsh-annotation-core:
-        specifier: file:D:/AI/DeepSeekHarness-Plugin/artifacts/system-fixes-20260914/dsh-annotation-core-0.3.12-rc2.7.tgz
-        version: file:../../../artifacts/system-fixes-20260914/dsh-annotation-core-0.3.12-rc2.7.tgz
+        specifier: link:../../session-context-graph-20260913/dsh-annotation-core
+        version: link:../../session-context-graph-20260913/dsh-annotation-core
       jsdom:
         specifier: 26.1.0
         version: 26.1.0

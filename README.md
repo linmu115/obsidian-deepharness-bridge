@@ -1,6 +1,16 @@
 # Obsidian DeepHarness Bridge
 
-当前版本 **0.6.4-rc2.6**，面向 **DSH 0.1.5-rc.2**。这是安装在 Obsidian Vault 中的伴侣插件，提供笔记选段引用、内嵌 DSH 会话、笔记与会话双向链接、会话贴纸入口和可恢复的同步。DSH 侧需使用配套的 [Obsidian Session Reference Suite](https://github.com/linmu115/dsh-obsidian-session-reference-suite/blob/codex/rc2-session-context-graph/README.md)。
+当前版本 **0.7.0-rc2.1**，面向 **DSH 0.1.5-rc.2**。这是安装在 Obsidian Vault 中的伴侣插件，提供笔记选段引用、内嵌 DSH 会话、笔记与会话双向链接、会话贴纸入口和可恢复的同步。DSH 侧需使用配套的 [Obsidian Session Reference Suite](https://github.com/linmu115/dsh-obsidian-session-reference-suite/blob/codex/rc2-session-context-graph/README.md)。
+
+## 先为此 Vault 选择实例
+
+打开插件设置中的“此 Vault 的 DSH 实例”，刷新本机发现，或填写不含令牌的 DSH Web 地址并核验。选择已核验实例后点击“绑定 / 改绑所选实例”。一个 Vault 同时绑定一个实例及 profile；同一实例可以连接多个 Vault。绑定成功以设置中的已保存修订为准，发现候选不会自动授权。
+
+新版共享通道需要支持 `vault-instance-binding-v1` 的配套 Bridge 和 Protocol 0.4.0-rc2.1。旧固定地址仅作为手动发现候选，不会根据最后连接的控制器自动永久绑定。新 Companion 未绑定时保留本地笔记和既有记录，跨端操作需先完成绑定；不宣称旧 Bridge 支持多 Vault。
+
+端口设为 0 可自动选择；固定端口冲突时也会选择可用端口，连接状态显示实际地址。本机发现只发布无令牌的身份及地址，Viewer 登录地址仍由已核验的绑定实例通过控制器租约提供。
+
+改绑只影响后续操作。历史链接保留原实例，旧排队引用显示为暂停，不会改投新实例。Maintenance 缺席时普通 Bridge 连接仍可用，维护知识同步不会启动。详见[修改报告](docs/changes/2026-09-18-vault-instance-binding.md)。
 
 ## 三种不同的操作
 

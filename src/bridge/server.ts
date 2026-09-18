@@ -59,8 +59,14 @@ import {
 } from "../settings.ts";
 import { ClientActionQueue, type QueuedBridgeMessage } from "./queue.ts";
 import { KeyedSerialWork } from "../serial-work.ts";
+import { BINDING_CAPABILITY, VAULT_BINDING_PATH, VAULT_IDENTITY_PATH, changeVaultBindingRequestSchema, type BoundOperationRoute, type VaultIdentity } from 'dsh-obsidian-bridge-protocol/binding';
+import type { VaultBindingProvider } from '../binding/provider.ts';
 
 interface TokenRecord {
+  bindingRevision?: number;
+  profileId?: string;
+  dshBootId?: string;
+  dshOrigin?: string;
   clientId: string;
   role: BridgeClientRole;
   surfaceId?: string;
@@ -78,6 +84,11 @@ export interface SaveSessionNoteRequest {
 }
 
 export interface BridgeServerOptions {
+  binding?: VaultBindingProvider;
+  discoveryIdentity?: () => VaultIdentity;
+  jobRoute?: (actionId: string) => BoundOperationRoute | undefined;
+  autoPort?: boolean;
+  onControllerReady?: () => void;
   onKnowledge?: (operation: string, input: Record<string, unknown>, instanceId: string) => Promise<unknown>;
   port?: number;
   allowedDshOrigins?: string[];
@@ -122,6 +133,11 @@ class HttpError extends Error {
 }
 
 const handshakeSchema = z.object({
+  bindingProtocolVersion: z.literal(1).optional(),
+  dshBootId: z.string().uuid().optional(),
+  vaultId: z.string().min(1).optional(),
+  bindingRevision: z.number().int().nonnegative().optional(),
+  profileId: z.string().min(1).optional(),
   clientId: z.string().min(1).max(128),
   surfaceId: z.string().uuid().optional(),
   dshInstanceId: z.string().min(1).max(256).optional(),
@@ -179,6 +195,8 @@ function errorPayload(error: unknown): { error: string; code?: string } {
 function applicationErrorStatus(error: unknown): number | null {
   if (!error || typeof error !== "object" || !("code" in error)) return null;
   const code = (error as { code?: unknown }).code;
+  if (code === 'INSTANCE_OFFLINE') return 503;
+  if (typeof code === 'string' && ['BINDING_REQUIRED', 'BINDING_MISMATCH', 'BINDING_REVISION_CONFLICT', 'BOOT_MISMATCH', 'IDENTITY_CONFLICT'].includes(code)) return 409;
   if (code === "REVISION_CONFLICT" || code === "CORRUPT_MARKER" || code === "IDEMPOTENCY_CONFLICT" || code === "SOURCE_CHANGED" || code === "KNOWLEDGE_CONFLICT") return 409;
   if (code === "NOTE_NOT_FOUND") return 404;
   return null;
@@ -231,6 +249,27 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
   const queueId = randomBytes(16).toString("hex");
   const tokens = new Map<string, TokenRecord>();
   const leases = new Map<string, BridgeLease>();
+  const actionRoutes = new Map<string, BoundOperationRoute | undefined>();
+  const binding = options.binding;
+  const unsubscribeBinding = binding?.subscribe(() => { tokens.clear(); leases.clear(); });
+  const assertBinding = (authentication: TokenRecord): void => {
+    if (!binding) return;
+    const snapshot = binding.snapshot();
+    if (!snapshot.target) throw new HttpError(409, 'Vault 尚未绑定实例', 'BINDING_REQUIRED');
+    if (authentication.bindingRevision !== snapshot.revision || authentication.dshInstanceId !== snapshot.target.instanceId || authentication.profileId !== snapshot.target.profileId)
+      throw new HttpError(409, '绑定已变化或操作属于另一实例', 'BINDING_MISMATCH');
+    if (!authentication.dshBootId || authentication.dshBootId !== binding.currentIdentity()?.bootId)
+      throw new HttpError(409, '实例已重启，请刷新页面连接', 'BOOT_MISMATCH');
+  };
+  const acceptsAction = (authentication: TokenRecord, message: QueuedBridgeMessage): boolean =>
+    visibleTo(authentication, message, options.referenceSurfaceId) && (!binding || binding.accepts(actionRoutes.get(message.actionId)));
+  const verifyController = async (authentication: TokenRecord, input: { browserOrigins: string[]; dshViewerUrl?: string | undefined }): Promise<void> => {
+    if (!binding || authentication.role !== 'controller') return;
+    await binding.verify({ origin: authentication.dshOrigin!, bootId: authentication.dshBootId! }, { instanceId: authentication.dshInstanceId!, profileId: authentication.profileId! });
+    assertBinding(authentication);
+    if (input.browserOrigins.some(origin => origin !== authentication.dshOrigin) || (input.dshViewerUrl && new URL(input.dshViewerUrl).origin !== authentication.dshOrigin))
+      throw new HttpError(409, 'Viewer 地址不属于绑定实例', 'IDENTITY_CONFLICT');
+  };
   const referenceWork = new KeyedSerialWork();
   const inMemoryNotes = new Map<string, SessionNoteDocument>();
   let latestTokenExpiry: number | null = null;
@@ -256,7 +295,7 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
   };
   const isAllowedBrowserOrigin = (origin: string): boolean => {
     cleanupExpired();
-    if (!controllerLeaseSeen && configuredOrigins.has(origin)) return true;
+    if (!binding && !controllerLeaseSeen && configuredOrigins.has(origin)) return true;
     for (const lease of leases.values()) {
       if (lease.role === "controller" && lease.browserOrigins.includes(origin)) return true;
     }
@@ -341,7 +380,7 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
           stickerProtocolVersion: STICKER_PROTOCOL_VERSION,
           bridgeOrigin: listeningOrigin,
           status: "ok",
-          capabilities: BRIDGE_CAPABILITIES,
+          capabilities: [...BRIDGE_CAPABILITIES, ...(binding ? [BINDING_CAPABILITY] : [])],
         }, allowedOrigin);
         return;
       }
@@ -351,11 +390,30 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
         return;
       }
 
+      if (request.method === 'GET' && requestUrl.pathname === VAULT_IDENTITY_PATH && options.discoveryIdentity) {
+        json(response, 200, options.discoveryIdentity(), allowedOrigin); return;
+      }
+      if (request.method === 'GET' && requestUrl.pathname === VAULT_BINDING_PATH && binding) {
+        json(response, 200, binding.snapshot(), allowedOrigin); return;
+      }
       if (request.method === "POST" && requestUrl.pathname === "/control/v1/handshake") {
         const input = bridgeControlHandshakeRequestSchema.parse(await readJsonBody(request, maxBodyBytes));
         if (input.expectedBootId !== undefined) assertCurrentBoot(input.expectedBootId);
         if (input.role === "controller" && callerIdentity !== LOCAL_HOST_CALLER) {
           throw new HttpError(403, "Only a loopback host process can hold the controller role", "NOT_CONTROLLER");
+        }
+        if (binding) {
+          const snapshot = binding.snapshot();
+          if (input.bindingProtocolVersion !== 1 || input.vaultId !== snapshot.vaultId || input.bindingRevision !== snapshot.revision)
+            throw new HttpError(409, '请刷新 Vault 绑定后重试', 'BINDING_MISMATCH');
+          if (!input.dshInstanceId || !input.profileId || !input.dshBootId || !input.dshOrigin)
+            throw new HttpError(409, '需要可核验的实例身份', 'IDENTITY_CONFLICT');
+          await binding.verify({ origin: input.dshOrigin, bootId: input.dshBootId }, { instanceId: input.dshInstanceId, profileId: input.profileId });
+          if (binding.snapshot().revision !== snapshot.revision) throw new HttpError(409, '绑定已变化', 'BINDING_MISMATCH');
+          if (snapshot.target?.instanceId === input.dshInstanceId && snapshot.target.profileId === input.profileId
+            && [...tokens.values()].some(token => token.role === 'controller' && token.dshInstanceId === input.dshInstanceId && token.dshBootId !== input.dshBootId)) {
+            tokens.clear(); leases.clear();
+          }
         }
         for (const [token, record] of tokens) {
           if (record.clientId === input.clientId) tokens.delete(token);
@@ -365,6 +423,7 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
         tokens.set(token, {
           clientId: input.clientId,
           role: input.role,
+          ...(binding ? { bindingRevision: input.bindingRevision!, profileId: input.profileId!, dshBootId: input.dshBootId!, dshOrigin: input.dshOrigin! } : {}),
           ...(input.dshInstanceId === undefined ? {} : { dshInstanceId: input.dshInstanceId }),
           origin: callerIdentity,
           expiresAt,
@@ -376,12 +435,20 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
           role: input.role,
           token,
           tokenExpiresAt: expiresAt,
+          ...(binding ? { bindingProtocolVersion: 1, vaultId: binding.vaultId, bindingRevision: input.bindingRevision, profileId: input.profileId, dshBootId: input.dshBootId } : {}),
         }, allowedOrigin);
         return;
       }
 
       if (request.method === "POST" && (requestUrl.pathname === "/v1/handshake" || requestUrl.pathname === "/v2/handshake")) {
         const input = handshakeSchema.parse(await readJsonBody(request, maxBodyBytes));
+        const bound = binding?.snapshot();
+        if (bound && (!bound.target || input.dshInstanceId !== bound.target.instanceId
+          || input.bindingProtocolVersion !== 1 || !input.dshBootId || input.dshBootId !== binding?.currentIdentity()?.bootId
+          || input.vaultId !== bound.vaultId
+          || input.profileId !== bound.target.profileId
+          || input.bindingRevision !== bound.revision))
+          throw new HttpError(409, '页面实例与 Vault 绑定不匹配', 'BINDING_MISMATCH');
         for (const [token, record] of tokens) {
           if (record.clientId === input.clientId) tokens.delete(token);
         }
@@ -390,6 +457,7 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
         tokens.set(token, {
           clientId: input.clientId,
           role: "surface",
+          ...(bound?.target ? { bindingRevision: bound.revision, profileId: bound.target.profileId, dshBootId: input.dshBootId! } : {}),
           ...(input.surfaceId === undefined ? {} : { surfaceId: input.surfaceId }),
           ...(input.dshInstanceId === undefined ? {} : { dshInstanceId: input.dshInstanceId }),
           origin: callerIdentity,
@@ -401,12 +469,13 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
           annotationProtocolVersion: ANNOTATION_PROTOCOL_VERSION,
           stickerProtocolVersion: STICKER_PROTOCOL_VERSION,
           bridgeOrigin: listeningOrigin,
-          capabilities: BRIDGE_CAPABILITIES,
+          capabilities: [...BRIDGE_CAPABILITIES, ...(binding ? [BINDING_CAPABILITY] : [])],
           clientId: input.clientId,
           ...(input.surfaceId === undefined ? {} : { surfaceId: input.surfaceId }),
           ...(input.dshInstanceId === undefined ? {} : { dshInstanceId: input.dshInstanceId }),
           token,
           expiresAt,
+          ...(bound ? { bindingProtocolVersion: 1, vaultId: bound.vaultId, bindingRevision: bound.revision, profileId: bound.target?.profileId, dshBootId: input.dshBootId } : {}),
         } : { protocolVersion: PROTOCOL_VERSION, clientId: input.clientId, token, expiresAt }, allowedOrigin);
         return;
       }
@@ -418,8 +487,26 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
         throw new HttpError(401, "Handshake token is missing or expired");
       }
 
+      if (request.method === 'POST' && requestUrl.pathname === VAULT_BINDING_PATH && binding) {
+        if (authentication.role !== 'controller' || callerIdentity !== LOCAL_HOST_CALLER) throw new HttpError(403, '绑定修改需要已认证的本机控制器', 'NOT_CONTROLLER');
+        const input = changeVaultBindingRequestSchema.parse(await readJsonBody(request, maxBodyBytes));
+        const target = input.target ?? binding.operationOwner(input.operationId) ?? binding.snapshot().target;
+        if (!target || target.instanceId !== authentication.dshInstanceId || target.profileId !== authentication.profileId)
+          throw new HttpError(403, '控制器只能管理自身实例的绑定', 'NOT_CONTROLLER');
+        if (input.candidate && (input.candidate.origin !== authentication.dshOrigin || input.candidate.bootId !== authentication.dshBootId))
+          throw new HttpError(409, '绑定候选与已核验控制器不匹配', 'IDENTITY_CONFLICT');
+        json(response, 200, await binding.change(input), allowedOrigin); return;
+      }
+      await binding?.assertUniqueVault();
+      assertBinding(authentication);
+      const readAuthenticatedBody = async (limit = maxBodyBytes): Promise<unknown> => {
+        const body = await readJsonBody(request, limit);
+        assertBinding(authentication);
+        return body;
+      };
       if (request.method === "POST" && requestUrl.pathname === "/control/v1/leases") {
-        const input = acquireBridgeLeaseRequestSchema.parse(await readJsonBody(request, maxBodyBytes));
+        const input = acquireBridgeLeaseRequestSchema.parse(await readAuthenticatedBody());
+        await verifyController(authentication, input);
         if (authentication.role !== "controller" && (input.browserOrigins.length > 0 || input.dshViewerUrl !== undefined)) {
           throw new HttpError(403, "Only a loopback host controller may authorize browser origins or a DSH Viewer URL", "NOT_CONTROLLER");
         }
@@ -433,10 +520,12 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
           acquiredAt,
           expiresAt: acquiredAt + input.ttlMs,
           browserOrigins: input.browserOrigins,
+          ...(binding ? { bindingProtocolVersion: 1, vaultId: binding.vaultId, bindingRevision: authentication.bindingRevision, profileId: authentication.profileId, dshBootId: authentication.dshBootId } : {}),
           ...(input.dshViewerUrl === undefined ? {} : { dshViewerUrl: input.dshViewerUrl }),
         });
         if (authentication.role === "controller") controllerLeaseSeen = true;
         leases.set(lease.leaseId, lease);
+        if (authentication.role === 'controller') options.onControllerReady?.();
         json(response, 201, lease, allowedOrigin);
         return;
       }
@@ -444,7 +533,8 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
       const controlLeaseMatch = /^\/control\/v1\/leases\/([^/]+)$/.exec(requestUrl.pathname);
       if (controlLeaseMatch && request.method === "PUT") {
         const leaseId = decodeURIComponent(controlLeaseMatch[1] ?? "");
-        const input = renewBridgeLeaseRequestSchema.parse(await readJsonBody(request, maxBodyBytes));
+        const input = renewBridgeLeaseRequestSchema.parse(await readAuthenticatedBody());
+        await verifyController(authentication, input);
         if (authentication.role !== "controller" && (input.browserOrigins.length > 0 || input.dshViewerUrl !== undefined)) {
           throw new HttpError(403, "Only a loopback host controller may authorize browser origins or a DSH Viewer URL", "NOT_CONTROLLER");
         }
@@ -461,6 +551,7 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
           dshViewerUrl: input.dshViewerUrl,
         });
         leases.set(leaseId, renewed);
+        if (authentication.role === 'controller') options.onControllerReady?.();
         json(response, 200, renewed, allowedOrigin);
         return;
       }
@@ -480,7 +571,7 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
         if (authentication.role !== "controller") {
           throw new HttpError(403, "Only the controller lease may drain the Bridge", "NOT_CONTROLLER");
         }
-        const input = drainBridgeRequestSchema.parse(await readJsonBody(request, maxBodyBytes));
+        const input = drainBridgeRequestSchema.parse(await readAuthenticatedBody());
         assertCurrentBoot(input.expectedBootId);
         if (drainRequestId !== undefined && drainRequestId !== input.requestId && lifecycleState !== "READY") {
           throw new HttpError(409, "A different drain request already owns this transition", "INVALID_STATE");
@@ -497,7 +588,7 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
         if (authentication.role !== "controller") {
           throw new HttpError(403, "Only the controller lease may resume the Bridge", "NOT_CONTROLLER");
         }
-        const input = resumeBridgeRequestSchema.parse(await readJsonBody(request, maxBodyBytes));
+        const input = resumeBridgeRequestSchema.parse(await readAuthenticatedBody());
         assertCurrentBoot(input.expectedBootId);
         if (lifecycleState !== "DRAINED" && lifecycleState !== "DEGRADED") {
           throw new HttpError(409, `Bridge cannot resume from ${lifecycleState}`, "INVALID_STATE");
@@ -514,6 +605,7 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
       countedWorkRequest = true;
       const assertReferenceOwner = async (referenceId: string, explicitInstanceId?: string) => {
         const owner = await options.referenceInstanceId?.(referenceId) ?? queue.instanceForReference(referenceId);
+        assertBinding(authentication);
         if ((owner !== undefined && owner !== authentication.dshInstanceId) || (explicitInstanceId !== undefined && explicitInstanceId !== authentication.dshInstanceId))
           throw new HttpError(409, "Reference belongs to a different DSH instance", "IDEMPOTENCY_CONFLICT");
         return owner;
@@ -528,7 +620,7 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
         json(response, 200, queue.pending(
           authentication.clientId,
           after,
-          (message) => message.type === "deep-link" && visibleTo(authentication, message, options.referenceSurfaceId),
+          (message) => message.type === "deep-link" && acceptsAction(authentication, message),
         ), allowedOrigin);
         return;
       }
@@ -540,7 +632,7 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
         if (!Number.isInteger(after) || after < 0) throw new HttpError(400, "Action cursor must be a non-negative integer");
         json(response, 200, {
           queueId,
-          ...queue.pending(authentication.clientId, after, (message) => visibleTo(authentication, message, options.referenceSurfaceId)),
+          ...queue.pending(authentication.clientId, after, (message) => acceptsAction(authentication, message)),
         }, allowedOrigin);
         return;
       }
@@ -548,14 +640,16 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
       const v2AckMatch = /^\/v2\/actions\/([^/]+)\/ack$/.exec(requestUrl.pathname);
       if (request.method === "POST" && v2AckMatch) {
         const actionId = decodeURIComponent(v2AckMatch[1] ?? "");
-        const claim = ReferenceClaimV2Schema.parse(await readJsonBody(request, maxBodyBytes));
+        const claim = ReferenceClaimV2Schema.parse(await readAuthenticatedBody());
         // Also reject stale/in-flight clients and replays after the queue entry
         // has completed; filtering the pending list alone is not sufficient.
         if (!captureReceiver(authentication, options.referenceSurfaceId)) throw new HttpError(409, "只有 Obsidian 内嵌页可以领取引用", "IDEMPOTENCY_CONFLICT");
         if (claim.dshInstanceId !== authentication.dshInstanceId) throw new HttpError(409, "Reference claim belongs to a different DSH instance", "IDEMPOTENCY_CONFLICT");
         const action = queue.message(actionId);
-        if (action !== undefined && !visibleTo(authentication, action, options.referenceSurfaceId)) throw new HttpError(409, "Reference action targets a different DSH instance", "IDEMPOTENCY_CONFLICT");
+        if (action !== undefined && !acceptsAction(authentication, action)) throw new HttpError(409, "Reference action targets a different DSH instance or binding", "IDEMPOTENCY_CONFLICT");
         await referenceWork.run(claim.referenceId, async () => {
+          assertBinding(authentication);
+          if (action !== undefined && !acceptsAction(authentication, action)) throw new HttpError(409, "Reference binding changed", "BINDING_MISMATCH");
           const result = queue.checkClaim(actionId, claim);
           if (result === "missing" || result === "cancelled") throw new HttpError(404, "Reference action is no longer available", "NOTE_NOT_FOUND");
           if (result === "conflict") throw new HttpError(409, "Reference action was already claimed differently", "IDEMPOTENCY_CONFLICT");
@@ -570,7 +664,7 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
       const refreshMatch = /^\/v2\/references\/([^/]+)\/refresh$/.exec(requestUrl.pathname);
       if (request.method === "POST" && refreshMatch) {
         const referenceId = decodeURIComponent(refreshMatch[1] ?? "");
-        const input = ReferenceRefreshRequestV2Schema.parse(await readJsonBody(request, maxBodyBytes));
+        const input = ReferenceRefreshRequestV2Schema.parse(await readAuthenticatedBody());
         await assertReferenceOwner(input.referenceId);
         if (input.referenceId !== referenceId) throw new HttpError(400, "Reference ID does not match request path");
         const result = ReferenceRefreshResultV2Schema.parse(
@@ -583,7 +677,7 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
       const discardMatch = /^\/v2\/references\/([^/]+)\/discard$/.exec(requestUrl.pathname);
       if (request.method === "POST" && discardMatch) {
         const referenceId = decodeURIComponent(discardMatch[1] ?? "");
-        const input = ReferenceDiscardV2Schema.parse(await readJsonBody(request, maxBodyBytes));
+        const input = ReferenceDiscardV2Schema.parse(await readAuthenticatedBody());
         await assertReferenceOwner(input.referenceId);
         if (input.referenceId !== referenceId) throw new HttpError(400, "Reference ID does not match request path");
         await referenceWork.run(referenceId, async () => {
@@ -596,7 +690,7 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
       }
 
       if (request.method === "POST" && requestUrl.pathname === "/v2/backlinks/commit") {
-        const input = BacklinkCommitV2Schema.parse(await readJsonBody(request, maxBodyBytes));
+        const input = BacklinkCommitV2Schema.parse(await readAuthenticatedBody());
         await assertReferenceOwner(input.referenceId, input.dshInstanceId);
         const result = await referenceWork.run(input.referenceId, async () => { await assertReferenceOwner(input.referenceId, input.dshInstanceId); return options.onCommitBacklink?.(input); });
         if (result === undefined) throw new HttpError(501, "Backlink commit is unavailable");
@@ -607,7 +701,7 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
       const deleteCommitMatch = /^\/v2\/references\/([^/]+)\/delete-commit$/.exec(requestUrl.pathname);
       if (request.method === "POST" && deleteCommitMatch) {
         const referenceId = decodeURIComponent(deleteCommitMatch[1] ?? "");
-        const input = ReferenceDeleteCommitV2Schema.parse(await readJsonBody(request, maxBodyBytes));
+        const input = ReferenceDeleteCommitV2Schema.parse(await readAuthenticatedBody());
         await assertReferenceOwner(input.referenceId, input.dshInstanceId);
         if (input.referenceId !== referenceId) throw new HttpError(400, "Reference ID does not match request path");
         if (options.onDeleteCommittedReference === undefined) throw new HttpError(501, "Reference deletion is unavailable");
@@ -624,7 +718,8 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
       }
 
       if (request.method === "POST" && requestUrl.pathname === "/v2/obsidian/open-note") {
-        const action = openNoteActionSchema.parse(await readJsonBody(request, maxBodyBytes));
+        const action = openNoteActionSchema.parse(await readAuthenticatedBody());
+        assertVault(action.vaultId);
         await options.onOpenNote?.(action);
         json(response, 200, { opened: true }, allowedOrigin);
         return;
@@ -632,10 +727,10 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
 
       const ackMatch = /^\/v1\/actions\/([^/]+)\/ack$/.exec(requestUrl.pathname);
       if (request.method === "POST" && ackMatch) {
-        await readJsonBody(request, maxBodyBytes);
+        await readAuthenticatedBody();
         const actionId = decodeURIComponent(ackMatch[1] ?? "");
         const message = queue.message(actionId);
-        if (message !== undefined && !visibleTo(authentication, message)) {
+        if (message !== undefined && !acceptsAction(authentication, message)) {
           throw new HttpError(409, "Deep-link action belongs to another DSH surface");
         }
         // Multiple DSH surfaces can observe the same one-shot command before
@@ -647,7 +742,8 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
       }
 
       if (request.method === "POST" && requestUrl.pathname === "/v1/obsidian/open-note") {
-        const action = openNoteActionSchema.parse(await readJsonBody(request, maxBodyBytes));
+        const action = openNoteActionSchema.parse(await readAuthenticatedBody());
+        assertVault(action.vaultId);
         await options.onOpenNote?.(action);
         json(response, 200, { opened: true }, allowedOrigin);
         return;
@@ -655,16 +751,18 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
 
       if (request.method === "GET" && requestUrl.pathname === "/v1/sticker-backlinks") {
         const target = stickerBacklinkTargetSchema.parse(Object.fromEntries(requestUrl.searchParams));
+        assertVault(target.vaultId);
         if (target.dshInstanceId !== undefined && target.dshInstanceId !== authentication.dshInstanceId) throw new HttpError(409, "Sticker target belongs to another DSH instance", "IDEMPOTENCY_CONFLICT");
         const backlinks = z.array(stickerBacklinkSchema).parse(
           await (options.onListStickerBacklinks?.(target) ?? Promise.resolve([])),
         );
-        json(response, 200, { backlinks }, allowedOrigin);
+        json(response, 200, { backlinks: backlinks.map(backlink => ({ ...backlink, ...(binding ? { vaultId: binding.vaultId } : {}) })) }, allowedOrigin);
         return;
       }
 
       if (request.method === "POST" && requestUrl.pathname === "/v1/sticker-backlinks/delete") {
-        const target = stickerBacklinkTargetSchema.parse(await readJsonBody(request, maxBodyBytes));
+        const target = stickerBacklinkTargetSchema.parse(await readAuthenticatedBody());
+        assertVault(target.vaultId);
         if (target.dshInstanceId !== undefined && target.dshInstanceId !== authentication.dshInstanceId) throw new HttpError(409, "Sticker target belongs to another DSH instance", "IDEMPOTENCY_CONFLICT");
         const result = stickerBacklinkDeleteResultSchema.parse(
           await (options.onDeleteStickerBacklinks?.(target) ?? Promise.resolve({ notesChanged: 0, linksRemoved: 0 })),
@@ -678,23 +776,27 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
       if (knowledgeMatch && request.method === 'POST') {
         if (!authentication.dshInstanceId) throw new HttpError(409, '知识操作需要当前实例身份');
         if (!options.onKnowledge) throw new HttpError(501, '请升级 Obsidian Companion');
-        const input = z.record(z.string(), z.unknown()).parse(await readJsonBody(request, Math.min(maxBodyBytes, 512 * 1024)));
+        const input = z.record(z.string(), z.unknown()).parse(await readAuthenticatedBody(Math.min(maxBodyBytes, 512 * 1024)));
+        assertVault(input.vaultId);
         const result = await options.onKnowledge(knowledgeMatch[1]!, input, authentication.dshInstanceId);
         if (Buffer.byteLength(JSON.stringify(result)) > 512 * 1024) throw new HttpError(413, '本次结果过大，请分批读取');
         json(response, 200, result, allowedOrigin);
         return;
       }
       if (sessionNoteMatch && request.method === "GET") {
+        assertVault(requestUrl.searchParams.get("vaultId") ?? undefined);
         const sessionId = decodeURIComponent(sessionNoteMatch[1] ?? "");
         const document = await (options.onReadSessionNote?.(sessionId) ?? Promise.resolve(inMemoryNotes.get(sessionId) ?? null));
         if (!document) throw new HttpError(404, "Session note was not found");
-        json(response, 200, document, allowedOrigin);
+        json(response, 200, { ...document, ...(binding ? { vaultId: binding.vaultId } : {}) }, allowedOrigin);
         return;
       }
 
       if (sessionNoteMatch && request.method === "PUT") {
-        const input = saveSessionNoteSchema.parse(await readJsonBody(request, maxBodyBytes));
+        const input = saveSessionNoteSchema.parse(await readAuthenticatedBody());
         const sessionId = decodeURIComponent(sessionNoteMatch[1] ?? "");
+        assertVault(input.document.vaultId);
+        for (const sticker of input.document.stickers) assertVault(sticker.vaultId);
         if (input.document.sessionId !== sessionId) throw new HttpError(400, "Session ID does not match request path");
         const result = options.onSaveSessionNote
           ? await options.onSaveSessionNote(input)
@@ -723,13 +825,36 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
     });
   });
 
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(port, "127.0.0.1", () => {
-      server.off("error", reject);
-      resolve();
-    });
+  function assertVault(vaultId: unknown): void {
+    if (vaultId !== undefined && (typeof vaultId !== 'string' || (binding && vaultId !== binding.vaultId)))
+      throw new HttpError(409, 'Operation belongs to another Vault', 'BINDING_MISMATCH');
+  }
+
+  // Browsers reject these ports even on loopback; an OS ephemeral allocation can
+  // land on one of them. Select another available port before publishing it.
+  const forbiddenPorts = new Set([1719,1720,1723,2049,3659,4045,4190,5060,5061,6000,6566,6665,6666,6667,6668,6669,6679,6697,10080]);
+  const listen = (selectedPort: number) => new Promise<void>((resolve, reject) => {
+    const onError = (error: Error) => { server.off('listening', onListening); reject(error); };
+    const onListening = () => { server.off('error', onError); resolve(); };
+    server.once('error', onError);
+    server.once('listening', onListening);
+    server.listen(selectedPort, '127.0.0.1');
   });
+  let selectedPort = options.autoPort && (port < 1024 || forbiddenPorts.has(port)) ? 0 : port;
+  for (let attempt = 0; ; attempt++) {
+    try { await listen(selectedPort); }
+    catch (error) {
+      if (options.autoPort && selectedPort !== 0 && (error as NodeJS.ErrnoException).code === 'EADDRINUSE') {
+        selectedPort = 0;
+        await listen(selectedPort);
+      } else throw error;
+    }
+    const allocatedPort = (server.address() as AddressInfo).port;
+    if ((selectedPort !== 0 && !options.autoPort) || (allocatedPort >= 1024 && !forbiddenPorts.has(allocatedPort))) break;
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    if (attempt >= 9) throw new Error('Unable to allocate a browser-accessible loopback port');
+    selectedPort = 0;
+  }
   const address = server.address() as AddressInfo;
   listeningOrigin = `http://127.0.0.1:${address.port}`;
   setLifecycleState("READY");
@@ -740,11 +865,14 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
     status: lifecycleStatus,
     activeDshViewerUrl,
     prepareCapture: capture => {
-      const dshInstanceId = capture.dshInstanceId ?? activeDshInstanceId();
+      const dshInstanceId = capture.dshInstanceId ?? (binding ? binding.route().instanceId : activeDshInstanceId());
+      if (binding && (dshInstanceId !== binding.route().instanceId || capture.source.locator.vaultId !== binding.vaultId))
+        throw new HttpError(409, '引用属于另一实例或 Vault', 'BINDING_MISMATCH');
       return ObsidianReferenceCaptureV2Schema.parse({ ...capture, ...(dshInstanceId === undefined ? {} : { dshInstanceId }) });
     },
     cancelReference: (referenceId) => queue.cancelReference(referenceId),
     restoreReferenceClaim: (capture, claim) => {
+      actionRoutes.set(capture.actionId, options.jobRoute?.(capture.actionId));
       queue.enqueue(ObsidianReferenceCaptureV2Schema.parse(capture));
       const result = queue.claim(capture.actionId, ReferenceClaimV2Schema.parse(claim));
       if (result === "conflict") throw new HttpError(409, "Persisted reference claim conflicts", "IDEMPOTENCY_CONFLICT");
@@ -760,6 +888,11 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
     },
     enqueue(message) {
       if (closed) throw new HttpError(503, "Bridge is stopping", "INVALID_STATE");
+      if (binding && !actionRoutes.has(message.actionId)) {
+        const route = options.jobRoute?.(message.actionId);
+        // Ephemeral navigation retains the explicit historical instance; never infer an unscoped target.
+        actionRoutes.set(message.actionId, route ?? (message.type === 'deep-link' && message.dshInstanceId === binding.snapshot().target?.instanceId ? binding.route() : undefined));
+      }
       if (message.type === "reference-capture") {
         return queue.enqueue(ObsidianReferenceCaptureV2Schema.parse(message));
       }
@@ -775,6 +908,7 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
     close() {
       if (closePromise) return closePromise;
       closed = true;
+      unsubscribeBinding?.();
       setLifecycleState("DRAINING");
       closePromise = (async () => {
         await new Promise<void>((resolve, reject) => {
