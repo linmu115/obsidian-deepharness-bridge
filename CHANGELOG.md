@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.0-rc2.2 — 2026-09-18
+
+Use desktop HTTP for DSH identity verification so authenticated Vault binding works inside Obsidian even when renderer CORS rejects the request. Preserve loopback validation, no redirects, a total deadline, bounded response bodies and identity checks. Existing Vault data and binding CAS behavior are unchanged.
+
 ## 0.7.0-rc2.1 — 2026-09-18
 
 Add explicit per-Vault instance/profile binding with durable CAS receipts, verified local discovery and manual fallback. Keep old queued jobs on their original binding revision, fence old boots, and accept Viewer leases only from the confirmed instance. Add settings controls, independent automatic ports, and Vault-scoped note/backlink metadata. Maintenance remains optional. See docs/changes/2026-09-18-vault-instance-binding.md.

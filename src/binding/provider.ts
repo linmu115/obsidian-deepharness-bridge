@@ -5,14 +5,35 @@ import {
 } from 'dsh-obsidian-bridge-protocol/binding';
 import { readDiscoveryRecords } from 'dsh-obsidian-bridge-protocol/discovery';
 import { SerialWork } from '../serial-work.ts';
+import { get } from 'node:http';
 
 export interface StoredBindingState {
   snapshot: VaultBindingSnapshot;
   receipts: Record<string, { request: string; result: VaultBindingSnapshot; owner?: BindingTarget }>;
 }
 export function bindingError(code: string, message: string): Error & { code: string } { return Object.assign(new Error(message), { code }); }
-export async function probeDshIdentity(origin: string, fetchImpl = fetch): Promise<DshInstanceIdentity> {
+/** Desktop transport avoids renderer CORS without weakening the loopback identity boundary. */
+function readDesktopIdentity(url: string): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const request = get(url, response => {
+      if (response.statusCode !== 200) { response.resume(); request.destroy(bindingError('INSTANCE_OFFLINE', '实例未运行或尚未安装新版 Bridge')); return; }
+      if (Number(response.headers['content-length']) > 65_536) { request.destroy(bindingError('IDENTITY_CONFLICT', '实例身份响应过大')); return; }
+      const chunks: Buffer[] = []; let length = 0;
+      response.on('data', (chunk: Buffer) => { length += chunk.length; if (length > 65_536) request.destroy(bindingError('IDENTITY_CONFLICT', '实例身份响应过大')); else chunks.push(chunk); });
+      response.on('error', error => { clearTimeout(timer); reject(error); });
+      response.on('end', () => { clearTimeout(timer); resolve(Buffer.concat(chunks)); });
+    });
+    // Total deadline, not an idle timeout: a slow drip must not keep the probe alive.
+    const timer = setTimeout(() => request.destroy(bindingError('INSTANCE_OFFLINE', '实例身份探测超时')), 5_000);
+    request.on('error', error => { clearTimeout(timer); reject(error); });
+    // node:http never follows redirects; only HTTP 200 is accepted above.
+  });
+}
+export async function probeDshIdentity(origin: string, fetchImpl?: typeof fetch): Promise<DshInstanceIdentity> {
   const normalized = discoveryOriginSchema.parse(origin);
+  let payload: Buffer;
+  if (!fetchImpl) payload = await readDesktopIdentity(normalized + DSH_IDENTITY_PATH);
+  else {
   const response = await fetchImpl(normalized + DSH_IDENTITY_PATH, { redirect: 'error', signal: AbortSignal.timeout(5_000) });
   if (!response.ok) throw bindingError('INSTANCE_OFFLINE', '实例未运行或尚未安装新版 Bridge');
   if (Number(response.headers.get('content-length')) > 65_536) throw bindingError('IDENTITY_CONFLICT', '实例身份响应过大');
@@ -21,7 +42,9 @@ export async function probeDshIdentity(origin: string, fetchImpl = fetch): Promi
   try { for (;;) { const part = await reader.read(); if (part.done) break; length += part.value.length;
     if (length > 65_536) throw bindingError('IDENTITY_CONFLICT', '实例身份响应过大'); chunks.push(part.value); } }
   finally { await reader.cancel().catch(() => undefined); }
-  const identity = dshInstanceIdentitySchema.parse(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+  payload = Buffer.concat(chunks);
+  }
+  const identity = dshInstanceIdentitySchema.parse(JSON.parse(payload.toString('utf8')));
   if (identity.origin !== normalized || !identity.capabilities.includes(BINDING_CAPABILITY)) throw bindingError('IDENTITY_CONFLICT', '实例身份或绑定能力不匹配');
   return identity;
 }
