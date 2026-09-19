@@ -1,3 +1,4 @@
+import { MAINTENANCE_BINDING_CAPABILITY } from "./binding/maintenance.ts";
 import { editorLivePreviewField, FileSystemAdapter, MarkdownView, Menu, Notice, Plugin } from "obsidian";
 import { canonicalVaultRoot } from './bridge/vault-location.ts';
 import { join } from 'node:path';
@@ -295,7 +296,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
     if (!this.bridge || !this.binding) throw new Error('Bridge discovery 尚未就绪');
     return { discoveryProtocolVersion: 1, kind: 'vault', vaultId: this.data.vaultId, publisherId: this.publisherId,
       bootId: this.bridge.identity.bootId, displayName: this.app.vault.getName(), origin: this.bridge.origin,
-      capabilities: [BINDING_CAPABILITY, 'reference-channel-v1'], binding: this.binding.snapshot() };
+      capabilities: [BINDING_CAPABILITY, MAINTENANCE_BINDING_CAPABILITY, 'reference-channel-v1'], binding: this.binding.snapshot() };
   }
   private async refreshDiscovery(): Promise<void> {
     await this.stopDiscovery?.(); this.stopDiscovery = undefined;

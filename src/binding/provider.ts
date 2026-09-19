@@ -1,3 +1,4 @@
+import type { VaultBindingGrant } from "@linmu/dsh-session-contracts";
 import {
   BINDING_CAPABILITY, DSH_IDENTITY_PATH, changeVaultBindingRequestSchema, discoveryOriginSchema,
   dshInstanceIdentitySchema, vaultBindingSnapshotSchema,
@@ -83,8 +84,17 @@ export class VaultBindingProvider {
     return identity;
   }
   change(input: ChangeVaultBindingRequest): Promise<VaultBindingSnapshot> {
+    return this.apply(changeVaultBindingRequestSchema.parse(input));
+  }
+  /** Called only after the local Engine signature and Vault boot have been verified. No controller identity is established. */
+  changeManaged(grant: VaultBindingGrant): Promise<VaultBindingSnapshot> {
+    const owner = { instanceId: grant.instanceId, profileId: grant.profileId };
+    return this.apply({ operationId: grant.operationId, expectedRevision: grant.expectedRevision, intent: grant.intent,
+      target: grant.intent === "bind" ? owner : null }, owner);
+  }
+  private apply(request: ChangeVaultBindingRequest, managerOwner?: BindingTarget): Promise<VaultBindingSnapshot> {
     return this.work.run(async () => {
-      const request = changeVaultBindingRequestSchema.parse(input), canonical = JSON.stringify(request);
+      const canonical = JSON.stringify(managerOwner ? { source: "maintenance-v1", owner: managerOwner, request } : request);
       const receipt = Object.hasOwn(this.state.receipts, request.operationId) ? this.state.receipts[request.operationId] : undefined;
       if (receipt) {
         if (receipt.request !== canonical) throw bindingError('IDEMPOTENCY_CONFLICT', '操作标识已用于另一绑定请求');
@@ -94,7 +104,9 @@ export class VaultBindingProvider {
       if (request.expectedRevision !== current.revision) throw bindingError('BINDING_REVISION_CONFLICT', '绑定已在其他入口修改，请刷新后重试');
       if (request.intent === 'bind' && current.target !== null) throw bindingError('BINDING_REVISION_CONFLICT', '已有绑定，请明确选择改绑');
       if (request.intent === 'rebind' && current.target === null) throw bindingError('BINDING_REVISION_CONFLICT', '当前尚未绑定，请选择绑定');
-      if (request.target) await this.verify(request.candidate!, request.target);
+      if (managerOwner && request.intent === "unbind" && (current.target?.instanceId !== managerOwner.instanceId || current.target.profileId !== managerOwner.profileId))
+        throw bindingError("BINDING_REVISION_CONFLICT", "Vault 当前不属于此实例，不能解绑");
+      if (request.target && !managerOwner) await this.verify(request.candidate!, request.target);
       await this.assertUniqueVault();
       const snapshot: VaultBindingSnapshot = { bindingProtocolVersion: 1, vaultId: this.vaultId, revision: current.revision + 1,
         target: request.target, updatedAt: this.now(), lastOperationId: request.operationId };
@@ -102,6 +114,7 @@ export class VaultBindingProvider {
       const next = { snapshot, receipts: { ...this.state.receipts, [request.operationId]: { request: canonical, result: snapshot, ...(owner ? { owner } : {}) } } };
       await this.persist(structuredClone(next));
       this.state = next;
+      if (managerOwner) this.verified.clear();
       for (const listener of this.listeners) { try { listener(); } catch { /* Durable result is not rolled back by a UI observer. */ } }
       return structuredClone(snapshot);
     });

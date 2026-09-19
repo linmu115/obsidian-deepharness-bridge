@@ -3,6 +3,7 @@ import { defineConfig } from "tsdown";
 // String entries match exact specifiers. Include subpaths such as the shared
 // protocol /data export, since the installed plugin has no node_modules.
 const bundledDependencies = [
+  /^@linmu\/dsh-session-contracts(?:\/|$)/,
   /^zod(?:\/|$)/,
   /^dsh-annotation-core(?:\/|$)/,
   /^dsh-obsidian-bridge-protocol(?:\/|$)/,
