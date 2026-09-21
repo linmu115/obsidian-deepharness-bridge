@@ -43,7 +43,7 @@ export class DeepHarnessSettingTab extends PluginSettingTab {
       .setName("DSH 启动日志")
       .setDesc("保留旧版配置；新版绑定后只采用已核验实例的实时连接，不用此日志覆盖 Viewer。")
       .addText((text) => text
-        .setPlaceholder("例如 D:\\AI\\DeepSeek-Harness\\logs\\official-dsh.stdout.log")
+        .setPlaceholder("选择你自己的 DSH 启动日志文件（可选）")
         .setValue(this.owner.settings.dshLaunchLogPath)
         .onChange((value) => { draft.dshLaunchLogPath = value.trim(); }));
 

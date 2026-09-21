@@ -1,4 +1,3 @@
-import { verifyMaintenanceGrant } from "../binding/maintenance.ts";
 import { randomBytes, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -381,13 +380,8 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
       const callerIdentity = allowedOrigin ?? (requestOrigin === undefined ? LOCAL_HOST_CALLER : undefined);
       if (!callerIdentity) throw new HttpError(403, "Request origin is not allowed");
 
-      if (request.method === "POST" && requestUrl.pathname === "/control/v1/maintenance-binding" && binding && options.discoveryIdentity) {
-        if (!isLocalLocationCaller(request, listeningOrigin)) throw new HttpError(403, "Maintenance binding requires a local host request");
-        if (closed || lifecycleState !== "READY") throw new HttpError(503, "Vault is not ready");
-        inFlightRequestCount++; countedWorkRequest = true;
-        const grant = await verifyMaintenanceGrant(await readJsonBody(request, 16384), options.discoveryIdentity());
-        if (closed || lifecycleState !== "READY" || options.discoveryIdentity().bootId !== grant.bootId) throw new HttpError(409, "Vault identity changed");
-        json(response, 200, await binding.changeManaged(grant)); return;
+      if (request.method === "POST" && requestUrl.pathname === "/control/v1/maintenance-binding") {
+        json(response, 410, { error: { code: 'BINDING_MOVED', message: '请在 DSH Bridge 的连接设置中选择 Vault；此全局绑定入口已停用。' } }); return;
       }
 
       if (request.method === "OPTIONS") {

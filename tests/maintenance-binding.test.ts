@@ -23,13 +23,12 @@ async function setup() {
  const post=(body:unknown,headers:Record<string,string>={})=>fetch(server.origin+"/control/v1/maintenance-binding",{method:"POST",headers:{"content-type":"application/json",...headers},body:JSON.stringify(body)});
  return {provider,probe,persist,identity,grant,post};
 }
-it("binds through a signed local request with DSH offline, replay is idempotent, no runtime identity is granted",async()=>{
- const f=await setup();const first=await f.post(sign(f.grant));expect(first.status).toBe(200);const snapshot=await first.json();
- expect(snapshot.target).toEqual({instanceId:"offline",profileId:"web"});expect(f.provider.currentIdentity()).toBeUndefined();expect(f.probe).not.toHaveBeenCalled();
- expect(await (await f.post(sign({...f.grant,expiresAt:Date.now()+30000}))).json()).toEqual(snapshot);expect(f.persist).toHaveBeenCalledOnce();
- const stale=await f.post(sign({...f.grant,operationId:randomUUID()}));expect(stale.status).toBe(409);
- const wrong=await f.post(sign({...f.grant,operationId:randomUUID(),expectedRevision:1,intent:"unbind",instanceId:"foreign"}));expect(wrong.status).toBe(409);
- const unbind=await f.post(sign({...f.grant,operationId:randomUUID(),expectedRevision:1,intent:"unbind"}));expect(unbind.status).toBe(200);expect((await unbind.json()).target).toBeNull();
+it("retires global signed binding without changing Vault data or contacting Maintenance",async()=>{
+ const f=await setup(); const before=f.provider.snapshot();
+ expect((await f.post(sign(f.grant))).status).toBe(410);
+ expect(f.provider.snapshot()).toEqual(before);
+ expect(f.provider.currentIdentity()).toBeUndefined();
+ expect(f.probe).not.toHaveBeenCalled();expect(f.persist).not.toHaveBeenCalled();
 });
 it("rejects tampered, expired, other-boot and browser-origin grants before persistence",async()=>{
  const f=await setup();

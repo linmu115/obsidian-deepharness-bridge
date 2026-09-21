@@ -1,6 +1,6 @@
 {
   "name": "obsidian-deepharness-bridge",
-  "version": "0.7.0-rc2.4",
+  "version": "0.7.0-rc2.6",
   "private": true,
   "description": "Obsidian companion bridge for DeepSeek Harness conversations",
   "dshKnowledge": {
@@ -49,7 +49,8 @@
     "README.md",
     "LICENSE",
     "scripts",
-    "docs/changes"
+    "docs/changes",
+    "docs"
   ],
   "scripts": {
     "build": "tsdown --config-loader unrun --config tsdown.config.ts",
