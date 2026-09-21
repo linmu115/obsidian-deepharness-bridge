@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.0-rc2.7 — 2026-09-21
+
+Keep a managed DSH reference block visible in live preview instead of replacing it with nothing. It now collapses into one small inline capsule with a sentinel at each end; the capsule stays on the text line and remains a single atomic range, so a partial selection can no longer swallow the block silently. Clicking the capsule expands it to the editable source and clicking again collapses it. Reading-view behaviour and every write path are unchanged. See docs/changes/2026-09-21-live-preview-reference-block-capsule.md.
+
+Carry the stable logical target of a managed sticker backlink into the live preview href. The chip previously dropped dshInstanceId, so the same link opened from reading mode but was refused as an unverified old link in live preview; the guard semantics for links that are genuinely missing or belong to another instance are unchanged. See docs/changes/2026-09-21-managed-backlink-instance-id.md.
+
+Typecheck and the complete 275-test suite pass, including the new live preview and deep-link guard suites. Existing Vault data, bindings and queued references are untouched.
+
 ## 0.7.0-rc2.3 — 2026-09-18
 
 Add a local-process-only Vault location proof for Maintenance folder selection. Resolve the desktop Vault adapter root with realpath and return the existing live discovery identity separately from the strict public identity schema. Reject browser Origins, cross-site fetches, forged Host headers and non-loopback callers; fail safely during shutdown or unavailable filesystem resolution without exposing paths in errors. No Vault data is written.

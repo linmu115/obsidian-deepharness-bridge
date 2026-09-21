@@ -10,11 +10,11 @@
 
 | 插件 | 本批版本 | 必要依赖 |
 |---|---|---|
-| [Annotation Core](https://github.com/linmu115/dsh-annotation-core/releases/tag/v0.3.12-rc2.24) | 0.3.12-rc2.24 | DSH 宿主 |
-| [ThoughtDAG](https://github.com/linmu115/thoughtdag/releases/tag/dsh-v0.4.14-rc2.20) | 0.4.14-rc2.20 | Core |
+| [Annotation Core](https://github.com/linmu115/dsh-annotation-core/releases/tag/v0.3.12-rc2.26) | 0.3.12-rc2.26 | DSH 宿主 |
+| [ThoughtDAG](https://github.com/linmu115/thoughtdag/releases/tag/dsh-v0.4.14-rc2.24) | 0.4.14-rc2.24 | Core |
 | [DSH Obsidian Bridge](https://github.com/linmu115/dsh-obsidian-bridge/releases/tag/v0.4.1-rc2.8) | 0.4.1-rc2.8 | 本套引用功能需要 Core |
 | [普通贴纸](https://github.com/linmu115/dsh-session-sticker-board/releases/tag/v0.7.4-rc2.7) | 0.7.4-rc2.7 | Core + DSH Bridge；Better Sidebar 可选 |
-| [Obsidian Companion](https://github.com/linmu115/obsidian-deepharness-bridge/releases/tag/v0.7.0-rc2.6) | 0.7.0-rc2.6 | 对接本批 DSH Bridge |
+| [Obsidian Companion](https://github.com/linmu115/obsidian-deepharness-bridge/releases/tag/v0.7.0-rc2.7) | 0.7.0-rc2.7 | 对接本批 DSH Bridge |
 
 附件是已经构建的运行包；使用方无需检出作者开发工作树或安装本地 contracts/protocol 源码。SHA256SUMS.txt 用于核对附件。可选 Obsidian CLI 不存在时，基础桥与引用仍可使用，CLI 操作不可用。
 
@@ -24,8 +24,8 @@
 
 ```powershell
 $env:DSH_HOME = 'C:\DSH\my-home'
-dsh plugin --profile web add ./dsh-annotation-core-0.3.12-rc2.24.tgz
-dsh plugin --profile web add ./dsh-thoughtdag-0.4.14-rc2.20.tgz
+dsh plugin --profile web add ./dsh-annotation-core-0.3.12-rc2.26.tgz
+dsh plugin --profile web add ./dsh-thoughtdag-0.4.14-rc2.24.tgz
 dsh plugin --profile web add ./dsh-obsidian-bridge-0.4.1-rc2.8.tgz
 dsh plugin --profile web add ./dsh-session-sticker-board-0.7.4-rc2.7.tgz
 dsh --profile web --no-open

@@ -1,6 +1,6 @@
 # Obsidian DeepHarness Bridge（Companion）
 
-**0.7.0-rc2.6 · Obsidian 侧插件 · 对接 DSH Obsidian Bridge**
+**0.7.0-rc2.7 · Obsidian 侧插件 · 对接 DSH Obsidian Bridge**
 
 在 Vault 中提供笔记选段引用、内嵌 DSH Viewer、定位和双链回执。每个 Vault 同时只连接一个 DSH 实例/profile。无 Maintenance、Launcher、Codex 或 Obsidian CLI 时，基础连接和引用仍可使用。
 
@@ -14,7 +14,7 @@
 
 **环境要求**：桌面版 Obsidian，以及已完成 DSH Obsidian Bridge 安装的目标 DSH 实例 `0.1.5-rc.2`。Companion 是 **Obsidian 侧插件**，不走 `dsh plugin` 命令。
 
-1. 从 [Release v0.7.0-rc2.6](https://github.com/linmu115/obsidian-deepharness-bridge/releases/tag/v0.7.0-rc2.6) 下载 `main.js`、`manifest.json`、`styles.css`，或直接下载 `obsidian-deepharness-bridge-0.7.0-rc2.6.zip`。
+1. 从 [Release v0.7.0-rc2.7](https://github.com/linmu115/obsidian-deepharness-bridge/releases/tag/v0.7.0-rc2.7) 下载 `main.js`、`manifest.json`、`styles.css`，或直接下载 `obsidian-deepharness-bridge-0.7.0-rc2.7.zip`。
 2. 在 Obsidian 中**先停用**目标 Vault 的该插件。首次安装则建立 `<Vault>/.obsidian/plugins/obsidian-deepharness-bridge/`。
 3. 把三个文件放进这个目录，**不要**多套一层 zip 文件夹。
 4. 更新前备份原目录，**保留 `data.json`**（它保存 Vault 身份、绑定与历史引用）。
