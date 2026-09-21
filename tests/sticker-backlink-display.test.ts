@@ -4,7 +4,10 @@ import { describe, expect, it } from "vitest";
 import {
   collectManagedStickerBacklinks,
   compactRenderedDshStickerBacklinks,
+  hrefForTarget,
 } from "../src/ui/sticker-backlink-display.ts";
+import { parseDshLogicalLink } from "../src/logical-link.ts";
+import type { StickerBacklinkTarget } from "../src/protocol.ts";
 
 const stickerId = "9bb3a80e-230d-44d1-a37c-f7b79d2bf315";
 const href = "obsidian://deepharness?session=session-demo&anchor=user-node-42&quoteHash=sha256%3A30101ebf&sticker=9bb3a80e-230d-44d1-a37c-f7b79d2bf315";
@@ -13,6 +16,65 @@ const metadata = JSON.stringify({
   sessionId: "session-demo",
   anchorId: "user-node-42",
   quoteHash: "sha256:30101ebf",
+});
+
+/** Metadata written while an instance was already bound, as the sticker board emits it. */
+const boundInstanceId = "i-27c4d5a7-bdb5-4b8a-8d95-6267f47499c5";
+const boundMetadata = JSON.stringify({
+  stickerId,
+  dshInstanceId: boundInstanceId,
+  logicalSessionId: "ls_796db5528095e5663ccea57f",
+  logicalAnchorId: "87ad1682-cf2a-4459-b98c-2fd9c974774d",
+  legacySessionId: "session-demo",
+  legacyAnchorId: "user-node-42",
+  sessionId: "session-demo",
+  anchorId: "user-node-42",
+  quoteHash: "sha256:30101ebf",
+});
+
+describe("managed sticker backlink hrefs", () => {
+  it("keeps dshInstanceId and every logical ID in the Live Preview href", () => {
+    const markdown = [
+      `<!-- dsh-sticker-backlink:${boundMetadata} -->`,
+      "[[DeepHarness/Sessions/session-demo#^dsh-sticker-9bb3a80e|贴纸来源]]",
+      `[回到 DSH：会话标题](${hrefForTarget(JSON.parse(boundMetadata) as StickerBacklinkTarget)})`,
+      "<!-- /dsh-sticker-backlink -->",
+    ].join("\n");
+
+    const matches = collectManagedStickerBacklinks(markdown);
+    expect(matches).toHaveLength(1);
+    const params = new URL(matches[0]!.href).searchParams;
+    expect(params.get("dshInstanceId")).toBe(boundInstanceId);
+    expect(params.get("logicalSessionId")).toBe("ls_796db5528095e5663ccea57f");
+    expect(params.get("logicalAnchorId")).toBe("87ad1682-cf2a-4459-b98c-2fd9c974774d");
+    expect(params.get("legacySessionId")).toBe("session-demo");
+    expect(params.get("legacyAnchorId")).toBe("user-node-42");
+    expect(params.get("session")).toBe("session-demo");
+    expect(params.get("anchor")).toBe("user-node-42");
+    expect(params.get("quoteHash")).toBe("sha256:30101ebf");
+    expect(params.get("sticker")).toBe(stickerId);
+  });
+
+  it("round-trips the Live Preview href into a deep-link action that still names its instance", () => {
+    const action = parseDshLogicalLink(
+      hrefForTarget(JSON.parse(boundMetadata) as StickerBacklinkTarget),
+      () => crypto.randomUUID(),
+    );
+    expect(action.dshInstanceId).toBe(boundInstanceId);
+    expect(action.sessionId).toBe("session-demo");
+    expect(action.anchorId).toBe("user-node-42");
+    expect(action.stickerId).toBe(stickerId);
+  });
+
+  it("omits absent logical fields so pre-binding links keep their original href", () => {
+    // Backward compatibility: a legacy link must not gain a fabricated dshInstanceId.
+    expect(hrefForTarget(JSON.parse(metadata) as StickerBacklinkTarget)).toBe(href);
+    expect(new URL(collectManagedStickerBacklinks([
+      `<!-- dsh-sticker-backlink:${metadata} -->`,
+      `[回到 DSH：会话标题](${href})`,
+      "<!-- /dsh-sticker-backlink -->",
+    ].join("\n"))[0]!.href).searchParams.has("dshInstanceId")).toBe(false);
+  });
 });
 
 describe("compact sticker backlink display", () => {

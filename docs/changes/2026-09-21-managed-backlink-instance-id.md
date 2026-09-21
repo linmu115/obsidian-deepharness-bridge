@@ -1,0 +1,7 @@
+# Carry the instance id of a managed sticker backlink into live preview
+
+A managed sticker backlink stores its stable logical target in the `<!-- dsh-sticker-backlink:… -->` metadata, including `dshInstanceId`. Reading view reuses the rendered anchor href and kept that field, but live preview rebuilt the href from the parsed target with a helper that emitted only session, anchor, quote hash and sticker id. The rebuilt chip was therefore indistinguishable from a link written before any binding existed, and the deep-link guard refused it as an unverified old link even though the very same link opened fine from reading mode.
+
+`hrefForTarget` now forwards every logical field the metadata carries — `dshInstanceId`, `logicalSessionId`, `logicalAnchorId`, `legacySessionId` and `legacyAnchorId` — in addition to the fields it already emitted. Absent fields stay absent, so a pre-binding link keeps its original href and is still refused as unverified rather than adopted, and a link naming another instance is still refused with its own message. The protocol schema already accepted the field, so no schema, data or compatibility change was needed, and no link is rewritten on disk.
+
+Validation: TypeScript noEmit passed; all 39 test files / 275 tests passed, including four deep-link guard assertions and three href round-trip assertions. Temporarily restoring the old helper fails the new live preview assertion with the original refusal message. Candidate version is 0.7.0-rc2.7.

@@ -28,8 +28,22 @@ function stickerBacklinkPattern(): RegExp {
   return new RegExp(DSH_STICKER_BACKLINK_SOURCE, "g");
 }
 
-function hrefForTarget(target: StickerBacklinkTarget): string {
+/**
+ * Live Preview rebuilds the chip href from managed metadata instead of reusing the
+ * rendered anchor that reading mode passes through, so every stable logical field has
+ * to be re-emitted here. Dropping `dshInstanceId` made the chip indistinguishable from
+ * a pre-binding link: `prepareDshTarget` then rejected it with
+ * "此旧链接尚未核验实例归属，请先单独维护该链接", even though the very same link opened
+ * fine from reading mode. Absent fields stay absent (never invented), so links written
+ * before the binding era keep their original meaning instead of being silently adopted.
+ */
+export function hrefForTarget(target: StickerBacklinkTarget): string {
   return buildObsidianDshLink({
+    ...(target.dshInstanceId ? { dshInstanceId: target.dshInstanceId } : {}),
+    ...(target.logicalSessionId ? { logicalSessionId: target.logicalSessionId } : {}),
+    ...(target.logicalAnchorId ? { logicalAnchorId: target.logicalAnchorId } : {}),
+    ...(target.legacySessionId ? { legacySessionId: target.legacySessionId } : {}),
+    ...(target.legacyAnchorId ? { legacyAnchorId: target.legacyAnchorId } : {}),
     sessionId: target.sessionId,
     anchorId: target.anchorId,
     quoteHash: target.quoteHash,

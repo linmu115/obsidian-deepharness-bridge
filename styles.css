@@ -67,3 +67,49 @@
   background: var(--background-modifier-error-hover);
   color: var(--text-error);
 }
+
+/* Inline capsule that stands in for a managed DSH reference block in live preview. */
+.dsh-reference-capsule {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: 0.08em;
+  white-space: nowrap;
+}
+
+.dsh-reference-capsule-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.24em;
+  margin-inline: 0.12em;
+  padding: 0.02em 0.45em;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 999px;
+  background: var(--background-secondary);
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 0.72em;
+  line-height: 1.5;
+  cursor: pointer;
+  user-select: none;
+}
+
+.dsh-reference-capsule-toggle:hover,
+.dsh-reference-capsule-toggle:focus-visible {
+  border-color: var(--interactive-accent);
+  color: var(--text-normal);
+}
+
+.dsh-reference-capsule-expanded .dsh-reference-capsule-toggle {
+  border-color: var(--interactive-accent);
+  color: var(--text-normal);
+}
+
+.dsh-reference-sentinel {
+  color: var(--text-faint);
+  font-size: 0.9em;
+  opacity: 0.75;
+}
+
+.dsh-reference-capsule-label {
+  font-weight: 500;
+}
