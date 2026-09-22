@@ -3,7 +3,7 @@
 > 当前运行环境：**DSH 0.1.5-rc.2 实例 / web profile**（0.1.5rc2）。其他 DSH 版本尚未验收。本插件安装在 Obsidian，连接此版本的 DSH 实例。
 
 
-**0.7.0-rc2.8 · Obsidian 侧插件 · 对接 DSH Obsidian Bridge**
+**0.7.0-rc2.9 · Obsidian 侧插件 · 对接 DSH Obsidian Bridge**
 
 在 Vault 中提供笔记选段引用、内嵌 DSH Viewer、定位和双链回执。每个 Vault 同时只连接一个 DSH 实例/profile。无 Maintenance、Launcher、Codex 或 Obsidian CLI 时，基础连接和引用仍可使用。
 
@@ -19,7 +19,7 @@
 
 **环境要求**：桌面版 Obsidian，以及已完成 DSH Obsidian Bridge 安装的目标 DSH 实例 `0.1.5-rc.2`。Companion 是 **Obsidian 侧插件**，不走 `dsh plugin` 命令。
 
-1. 从 [Release v0.7.0-rc2.8](https://github.com/linmu115/obsidian-deepharness-bridge/releases/tag/v0.7.0-rc2.8) 下载 `main.js`、`manifest.json`、`styles.css`，或直接下载 `obsidian-deepharness-bridge-0.7.0-rc2.8.zip`。
+1. 从 [Release v0.7.0-rc2.9](https://github.com/linmu115/obsidian-deepharness-bridge/releases/tag/v0.7.0-rc2.9) 下载 `main.js`、`manifest.json`、`styles.css`，或直接下载 `obsidian-deepharness-bridge-0.7.0-rc2.9.zip`。
 2. 在 Obsidian 中**先停用**目标 Vault 的该插件。首次安装则建立 `<Vault>/.obsidian/plugins/obsidian-deepharness-bridge/`。
 3. 把三个文件放进这个目录，**不要**多套一层 zip 文件夹。
 4. 更新前备份原目录，**保留 `data.json`**（它保存 Vault 身份、绑定与历史引用）。
@@ -36,3 +36,9 @@ DSH 侧可以连接多个 Vault；每个 Vault 同时只绑定一个 DSH 实例/
 完整说明（安装顺序、数据保留、故障定位）：[INSTALL.md](docs/INSTALL.md)。本批为预发布，当前能力和未完成验收见 [发布验证记录](docs/RELEASE-20260920.md)。
 
 源码开发：[独立克隆、锁定依赖与打包](docs/BUILD.md)。
+
+## 笔记中的引用按钮
+
+正文旁统一显示 `↗ DSH 引用 ▾ ×`。点主体：单条已提交引用直接跳转，多条弹出会话选择；待提交时显示状态。点 `▾` 查看引用内容、提交状态与目标会话，并可进入笔记源码模式查看／编辑对应记录。独立 `×` 保留原来的整段标记关联引用解除行为，不增加确认或分级删除。
+
+已关联到正文的引用记录不再另显示 `▸ 引用 ◂`；不能与正文配对的旧记录保留原入口。底层 Markdown 和双向引用数据不迁移，其他插件无需升级。

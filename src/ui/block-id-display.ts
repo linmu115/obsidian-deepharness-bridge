@@ -1,12 +1,9 @@
-import { StateEffect, StateField, type Extension, type Range, type Transaction } from "@codemirror/state";
+import { StateEffect, StateField, type Extension, type Range, type EditorState } from "@codemirror/state";
 import {
   Decoration,
   EditorView,
-  MatchDecorator,
-  ViewPlugin,
   WidgetType,
   type DecorationSet,
-  type ViewUpdate,
 } from "@codemirror/view";
 
 const DSH_BLOCK_ID_SOURCE = String.raw`(?<!\S)\^dsh-note-[A-Za-z0-9_-]+(?=[ \t]*$)`;
@@ -31,6 +28,9 @@ export interface ManagedDshReferenceBlockEntry extends ManagedDshReferenceBlockM
 }
 
 export interface DshBlockIdChipActions {
+  referenceIds?: (marker: string) => readonly string[];
+  label?: (marker: string) => string;
+  onDetails?: (marker: string, chip: HTMLElement) => void;
   onOpen?: (marker: string, chip: HTMLElement) => void;
   onDelete?: (marker: string) => void;
 }
@@ -87,7 +87,7 @@ export function shouldCompactDshBlockIds(livePreview: boolean): boolean {
 function createChip(document: Document, marker: string, actions: DshBlockIdChipActions = {}): HTMLSpanElement {
   const chip = document.createElement("span");
   chip.className = "dsh-block-id-chip";
-  chip.append("DSH 引用");
+  chip.append(actions.label?.(marker) ?? "DSH 引用");
   chip.title = actions.onOpen === undefined ? marker : `打开对应 DSH 会话（${marker}）`;
   chip.dataset.dshBlockId = marker;
   chip.setAttribute("aria-label", actions.onOpen === undefined
@@ -107,6 +107,20 @@ function createChip(document: Document, marker: string, actions: DshBlockIdChipA
     chip.addEventListener("keydown", (event) => {
       if (event.key === "Enter" || event.key === " ") open(event);
     });
+  }
+  if (actions.onDetails !== undefined) {
+    const details = document.createElement("button");
+    details.type = "button";
+    details.className = "dsh-block-id-details";
+    details.textContent = "▾";
+    details.title = "查看引用详情";
+    details.setAttribute("aria-label", "查看引用详情");
+    details.setAttribute("aria-haspopup", "dialog");
+    details.addEventListener("click", event => {
+      event.preventDefault(); event.stopPropagation();
+      actions.onDetails?.(marker, chip);
+    });
+    chip.append(details);
   }
   if (actions.onDelete !== undefined) {
     const button = document.createElement("button");
@@ -233,6 +247,7 @@ export function buildDshReferenceBlockDecorations(
   markdown: string,
   livePreview: boolean,
   expanded: ReadonlySet<string> = new Set(),
+  linkedReferenceIds: ReadonlySet<string> = new Set(),
 ): DshReferenceBlockDecorations {
   if (!livePreview) return { decorations: Decoration.none, atomic: Decoration.none };
   const decorations: Range<Decoration>[] = [];
@@ -247,7 +262,7 @@ export function buildDshReferenceBlockDecorations(
     }
     const replacement = Decoration.replace({
       inclusive: true,
-      widget: new DshReferenceBlockWidget(entry, false),
+      ...(linkedReferenceIds.has(entry.key.replace(/^marker:/, "")) ? {} : { widget: new DshReferenceBlockWidget(entry, false) }),
     });
     decorations.push(replacement.range(entry.from, entry.to));
     atomic.push(replacement.range(entry.from, entry.to));
@@ -255,88 +270,48 @@ export function buildDshReferenceBlockDecorations(
   return { decorations: Decoration.set(decorations, true), atomic: Decoration.set(atomic, true) };
 }
 
-function referenceBlockState(
-  markdown: string,
-  livePreview: boolean,
-  expanded: ReadonlySet<string>,
-): DshReferenceBlockState {
-  return { expanded, ...buildDshReferenceBlockDecorations(markdown, livePreview, expanded) };
-}
+/** Refresh labels and associations after persisted bridge state changes, without editing the note. */
+export const refreshDshReferenceChips = StateEffect.define<null>();
 
-function expandedReferenceBlocks(
-  expanded: ReadonlySet<string>,
-  transaction: Transaction,
-): ReadonlySet<string> {
-  let next: Set<string> | undefined;
-  for (const effect of transaction.effects) {
-    if (!effect.is(toggleDshReferenceBlock)) continue;
-    next ??= new Set(expanded);
-    if (next.has(effect.value)) next.delete(effect.value);
-    else next.add(effect.value);
-  }
-  return next ?? expanded;
+export function linkedReferenceIds(markdown: string, actions: DshBlockIdChipActions): Set<string> {
+  return new Set(collectCompactDshBlockIds(markdown).flatMap(({ marker }) => [...(actions.referenceIds?.(marker) ?? [])]));
 }
 
 export function createDshBlockIdCompactExtension(
   livePreviewField: StateField<boolean>,
   actions: DshBlockIdChipActions = {},
+  resolveActions: (state: EditorState) => DshBlockIdChipActions = () => actions,
 ): Extension {
-  const managedReferenceField = StateField.define<DshReferenceBlockState>({
-    create(state) {
-      return referenceBlockState(
-        state.doc.toString(),
-        state.field(livePreviewField, false) ?? false,
-        new Set(),
-      );
-    },
+  const build = (state: EditorState, expanded: ReadonlySet<string>): DshReferenceBlockState => {
+    const markdown = state.doc.toString();
+    const enabled = state.field(livePreviewField, false) ?? false;
+    const current = resolveActions(state);
+    const blocks = buildDshReferenceBlockDecorations(markdown, enabled, expanded, linkedReferenceIds(markdown, current));
+    const entries = collectManagedDshReferenceBlockEntries(markdown);
+    const chips = enabled ? collectCompactDshBlockIds(markdown)
+      .filter(({ from }) => !entries.some(entry => from >= entry.from && from < entry.to))
+      .map(({ from, to, marker }) => Decoration.replace({ widget: new DshBlockIdWidget(marker, current) }).range(from, to)) : [];
+    return { expanded, atomic: blocks.atomic, decorations: blocks.decorations.update({ add: chips, sort: true }) };
+  };
+  const field = StateField.define<DshReferenceBlockState>({
+    create: state => build(state, new Set()),
     update(value, transaction) {
-      const wasEnabled = transaction.startState.field(livePreviewField, false) ?? false;
-      const enabled = transaction.state.field(livePreviewField, false) ?? false;
-      const expanded = expandedReferenceBlocks(value.expanded, transaction);
-      if (!transaction.docChanged && wasEnabled === enabled && expanded === value.expanded) return value;
-      return referenceBlockState(transaction.state.doc.toString(), enabled, expanded);
-    },
-    provide: (field) => [
-      EditorView.decorations.from(field, value => value.decorations),
-      EditorView.atomicRanges.of((view) => view.state.field(field).atomic),
-    ],
-  });
-  const decorator = new MatchDecorator({
-    regexp: new RegExp(DSH_BLOCK_ID_SOURCE, "g"),
-    decoration: (match) => Decoration.replace({
-      widget: new DshBlockIdWidget(match[0], actions),
-    }),
-  });
-
-  const isEnabled = (view: EditorView): boolean => shouldCompactDshBlockIds(
-    view.state.field(livePreviewField, false) ?? false,
-  );
-
-  const compactBlockIds = ViewPlugin.fromClass(class {
-    decorations: DecorationSet;
-    private enabled: boolean;
-
-    constructor(view: EditorView) {
-      this.enabled = isEnabled(view);
-      this.decorations = this.enabled ? decorator.createDeco(view) : Decoration.none;
-    }
-
-    update(update: ViewUpdate): void {
-      const enabled = isEnabled(update.view);
-      if (!enabled) {
-        this.enabled = false;
-        this.decorations = Decoration.none;
-        return;
+      let expanded = value.expanded;
+      for (const effect of transaction.effects) {
+        if (!effect.is(toggleDshReferenceBlock)) continue;
+        const next = new Set(expanded);
+        if (next.has(effect.value)) next.delete(effect.value); else next.add(effect.value);
+        expanded = next;
       }
-      this.decorations = this.enabled
-        ? decorator.updateDeco(update, this.decorations)
-        : decorator.createDeco(update.view);
-      this.enabled = true;
-    }
-  }, {
-    decorations: (value) => value.decorations,
+      if (!transaction.docChanged && expanded === value.expanded
+        && !transaction.effects.some(effect => effect.is(refreshDshReferenceChips))
+        && transaction.startState.field(livePreviewField, false) === transaction.state.field(livePreviewField, false)) return value;
+      return build(transaction.state, expanded);
+    },
+    provide: field => [EditorView.decorations.from(field, value => value.decorations),
+      EditorView.atomicRanges.of(view => view.state.field(field).atomic)],
   });
-  return [managedReferenceField, compactBlockIds];
+  return field;
 }
 
 function readingTextNodes(root: HTMLElement): Text[] {
@@ -375,10 +350,14 @@ export function compactRenderedDshBlockIds(
   return replacementCount;
 }
 
-export function hideRenderedDshReferenceBlocks(root: HTMLElement): number {
+export function hideRenderedDshReferenceBlocks(root: HTMLElement, linkedIds?: ReadonlySet<string>): number {
   const blocks: HTMLElement[] = [];
   if (root.matches(RENDERED_REFERENCE_SELECTOR)) blocks.push(root);
   blocks.push(...root.querySelectorAll<HTMLElement>(RENDERED_REFERENCE_SELECTOR));
-  for (const block of blocks) block.remove();
-  return blocks.length;
+  const matched = blocks.filter(block => linkedIds === undefined || [...block.querySelectorAll<HTMLAnchorElement>("a[href]")].some(link => {
+    try { const id = new URL(link.getAttribute("href") ?? "").searchParams.get("referenceId"); return id !== null && linkedIds.has(id); }
+    catch { return false; }
+  }));
+  for (const block of matched) block.remove();
+  return matched.length;
 }

@@ -1,4 +1,5 @@
-import { editorLivePreviewField, FileSystemAdapter, MarkdownView, Menu, Notice, Plugin } from "obsidian";
+import { editorInfoField, editorLivePreviewField, FileSystemAdapter, MarkdownView, Menu, Notice, Plugin } from "obsidian";
+import { ReferenceDetailsModal } from "./ui/reference-details.ts";
 import { canonicalVaultRoot } from './bridge/vault-location.ts';
 import { join } from 'node:path';
 import { VaultKnowledgeStore } from './vault/knowledge-store.ts';
@@ -52,6 +53,8 @@ import {
 } from "./settings.ts";
 import { DeepHarnessSettingTab, type BridgeSettingsOwner } from "./ui/settings-tab.ts";
 import {
+  linkedReferenceIds, refreshDshReferenceChips, collectManagedDshReferenceBlockEntries,
+  type DshBlockIdChipActions,
   compactRenderedDshBlockIds,
   createDshBlockIdCompactExtension,
   hideRenderedDshReferenceBlocks,
@@ -178,18 +181,7 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
     }), this.data.bindingState);
     await this.startKnowledge();
 
-    const chipActions = {
-      onOpen: (marker: string, chip: HTMLElement) => {
-        void this.openReferencesForMarker(marker, chip).catch((error: unknown) => {
-          new Notice(error instanceof Error ? error.message : String(error));
-        });
-      },
-      onDelete: (marker: string) => {
-        void this.deleteReferencesForMarker(marker).catch((error: unknown) => {
-          new Notice(error instanceof Error ? error.message : String(error));
-        });
-      },
-    };
+    const chipActions = this.referenceChipActions();
     const stickerChipActions = {
       onDelete: (target: Parameters<typeof deleteStickerBacklinkFromNote>[2]) => {
         void this.deleteStickerBacklinkForActiveNote(target).catch((error: unknown) => {
@@ -197,12 +189,15 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
         });
       },
     };
-    this.registerEditorExtension(createDshBlockIdCompactExtension(editorLivePreviewField, chipActions));
+    this.registerEditorExtension(createDshBlockIdCompactExtension(editorLivePreviewField, chipActions, state => this.referenceChipActions(state.field(editorInfoField, false)?.file?.path)));
     this.registerEditorExtension(createDshStickerBacklinkCompactExtension(editorLivePreviewField, stickerChipActions));
-    this.registerMarkdownPostProcessor((element) => {
-      compactRenderedDshBlockIds(element, chipActions);
+    this.registerMarkdownPostProcessor(async (element, context) => {
+      const actions = this.referenceChipActions(context.sourcePath);
+      compactRenderedDshBlockIds(element, actions);
       compactRenderedDshStickerBacklinks(element, stickerChipActions);
-      hideRenderedDshReferenceBlocks(element);
+      const file = this.app.vault.getFileByPath(context.sourcePath);
+      const source = file ? await this.app.vault.cachedRead(file) : "";
+      hideRenderedDshReferenceBlocks(element, linkedReferenceIds(source, actions));
     });
 
     const captureOptions = () => ({ vaultId: this.data.vaultId });
@@ -453,6 +448,15 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
     this.data = { ...rememberOwnedMarkers(this.data), settings: this.settings };
     await this.saveData(this.data);
     this.persistedData = this.data;
+    // UI refresh cannot turn a successful persistence write into a failed transaction.
+    this.app.workspace.iterateAllLeaves?.(leaf => {
+      if (!(leaf.view instanceof MarkdownView)) return;
+      try {
+        const cm = (leaf.view.editor as unknown as { cm?: import("@codemirror/view").EditorView }).cm;
+        cm?.dispatch({ effects: refreshDshReferenceChips.of(null) });
+        leaf.view.previewMode.rerender(true);
+      } catch { /* A view may be closing; its next render reads current state. */ }
+    });
   }
 
   /** Run under stateWork. Failed or shared markers stay durable for later retry. */
@@ -862,6 +866,56 @@ export default class DeepHarnessBridgePlugin extends Plugin implements BridgeSet
       return;
     }
     new Notice("已解除当前笔记与 DSH 贴纸的双链");
+  }
+
+  private referenceChipActions(notePath?: string): DshBlockIdChipActions {
+    const records = (marker: string) => this.data.pendingReferences.filter((record): record is Exclude<PendingReferenceRecord, { state: "needs-reselect" }> =>
+      record.state !== "needs-reselect" && record.capture.source.locator.blockId === marker.replace(/^\^/, "")
+      && (notePath === undefined || record.capture.source.locator.notePath === notePath));
+    const run = (work: Promise<void>) => { void work.catch(error => new Notice(error instanceof Error ? error.message : String(error))); };
+    return {
+      referenceIds: marker => records(marker).map(record => record.capture.referenceId),
+      label: marker => {
+        const items = records(marker);
+        const committed = items.filter(record => record.state === "claimed" && this.data.backlinkReceipts.some(receipt => receipt.referenceId === record.capture.referenceId)).length;
+        return items.length > 0 && committed === 0 ? "DSH 引用 · 待提交" : `DSH 引用${items.length > 1 ? ` · ${items.length}` : ""}`;
+      },
+      onOpen: (marker, chip) => run(this.openReferencesForMarker(marker, chip)),
+      onDelete: marker => run(this.deleteReferencesForMarker(marker)),
+      onDetails: marker => {
+        const items = records(marker);
+        new ReferenceDetailsModal(this.app, items.map(record => {
+          const receipt = this.data.backlinkReceipts.find(receipt => receipt.referenceId === record.capture.referenceId);
+          const submitted = record.state === "claimed" && receipt !== undefined;
+          return {
+            text: record.capture.source.selectedText,
+            status: submitted ? "已提交" : "待提交",
+            session: record.state === "claimed" ? record.claim.sessionId : undefined,
+            source: submitted ? () => this.revealReferenceSource(receipt.notePath, record.capture.referenceId) : undefined,
+          };
+        })).open();
+      },
+    };
+  }
+
+  private async revealReferenceSource(notePath: string, referenceId: string): Promise<void> {
+    const file = this.app.vault.getFileByPath(notePath);
+    if (!file) throw new Error("引用所在笔记已不存在");
+    const source = await this.app.vault.read(file);
+    const entry = collectManagedDshReferenceBlockEntries(source).find(entry => entry.key === `marker:${referenceId}`);
+    if (!entry) throw new Error("引用源码已变化或移除，请重新查看详情");
+    const matching = this.app.workspace.getLeavesOfType("markdown").filter(leaf => (leaf.view as MarkdownView).file?.path === notePath);
+    const leaf = matching.find(leaf => leaf.view.containerEl.offsetWidth > 0) ?? matching[0] ?? this.app.workspace.getLeaf("tab");
+    this.app.workspace.setActiveLeaf(leaf, { focus: true });
+    await leaf.openFile(file);
+    if (!(leaf.view instanceof MarkdownView)) return;
+    await leaf.view.setState({ ...leaf.view.getState(), mode: "source", source: true }, { history: false });
+    const editor = leaf.view.editor;
+    // Resolve offsets again from the opened editor; never select an unrelated stale range.
+    const current = collectManagedDshReferenceBlockEntries(editor.getValue()).find(item => item.key === entry.key);
+    if (!current) throw new Error("引用源码已变化，请重新查看详情");
+    const from = editor.offsetToPos(current.from), to = editor.offsetToPos(current.to);
+    editor.setSelection(from, to); editor.scrollIntoView({ from, to }, true); editor.focus();
   }
 
   private async openReferencesForMarker(rawMarker: string, chip: HTMLElement): Promise<void> {
