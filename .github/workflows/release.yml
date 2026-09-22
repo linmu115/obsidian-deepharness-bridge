@@ -25,7 +25,7 @@ jobs:
           version: 11.19.0
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version-file: '.node-version'
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Verify release tag and manifests
@@ -40,12 +40,27 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build
-      - name: Upload Obsidian release assets
+      - name: Detect a prebuilt release
+        id: prebuilt
         if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if assets="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' 2>/dev/null)"; then
+            if printf '%s\n' "$assets" | grep -Fxq 'BUILD-INFO.json'; then
+              echo 'exists=true' >> "$GITHUB_OUTPUT"
+            fi
+          fi
+      - name: Upload Obsidian release assets
+        if: startsWith(github.ref, 'refs/tags/') && steps.prebuilt.outputs.exists != 'true'
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          overwrite_files: false
           files: |
             main.js
             manifest.json
             versions.json
+            styles.css
