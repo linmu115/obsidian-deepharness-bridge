@@ -3,8 +3,7 @@ packages:
 
 autoInstallPeers: false
 strictPeerDependencies: false
+verifyDepsBeforeRun: false
 
 allowBuilds:
-  'dsh-annotation-core@git+https://github.com/linmu115/dsh-annotation-core.git': true
-  'dsh-obsidian-bridge-protocol@git+https://github.com/linmu115/dsh-obsidian-bridge-protocol.git': true
   esbuild: true

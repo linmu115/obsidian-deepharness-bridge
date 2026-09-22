@@ -1,0 +1,26 @@
+{
+  "snapshots": [
+    {
+      "file": "dsh-annotation-core-0.3.12-rc2.28.tgz",
+      "version": "0.3.12-rc2.28",
+      "sha256": "cf44fa00c3f2c021d1473e0aba6ebda2c114a6b78eeeaa22c324106da65af103",
+      "source": "https://github.com/linmu115/dsh-annotation-core/releases/tag/v0.3.12-rc2.28"
+    },
+    {
+      "file": "bridge-protocol-0.4.0-rc2.1.tgz",
+      "name": "dsh-obsidian-bridge-protocol",
+      "version": "0.4.0-rc2.1",
+      "sha256": "75f6bbc5c2b10c53400a3df055eaef0c0b6d7e2e9177ff2dbbe297118bf5b824",
+      "source": "https://github.com/linmu115/dsh-obsidian-bridge/tree/main/vendor/protocol",
+      "sourceCommit": "21ffb8756399a2d886cc86eb7a99d20ea082b82b"
+    },
+    {
+      "file": "session-contracts-0.1.0.tgz",
+      "name": "@linmu/dsh-session-contracts",
+      "version": "0.1.0",
+      "sha256": "8f4fb5beecd840f5eb6916978142775ab5d742cdebc33df8ad8b0ec7776dda55",
+      "source": "https://github.com/linmu115/dsh-session-maintenance/tree/main/packages/contracts",
+      "sourceCommit": "03eb116520c21f6c54d3c787db17d22d17ccfb01"
+    }
+  ]
+}

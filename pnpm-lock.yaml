@@ -8,9 +8,6 @@ importers:
 
   .:
     dependencies:
-      dsh-obsidian-bridge-protocol:
-        specifier: link:../dsh-obsidian-bridge-protocol
-        version: link:../dsh-obsidian-bridge-protocol
       zod:
         specifier: 4.4.3
         version: 4.4.3
@@ -22,8 +19,8 @@ importers:
         specifier: 6.38.6
         version: 6.38.6
       '@linmu/dsh-session-contracts':
-        specifier: link:../../session-context-graph-20260913/dsh-session-maintenance/packages/contracts
-        version: link:../../session-context-graph-20260913/dsh-session-maintenance/packages/contracts
+        specifier: file:vendor/session-contracts-0.1.0.tgz
+        version: file:vendor/session-contracts-0.1.0.tgz
       '@types/jsdom':
         specifier: 21.1.7
         version: 21.1.7
@@ -31,8 +28,11 @@ importers:
         specifier: ^24.3.0
         version: 24.13.3
       dsh-annotation-core:
-        specifier: link:../../session-context-graph-20260913/dsh-annotation-core
-        version: link:../../session-context-graph-20260913/dsh-annotation-core
+        specifier: file:vendor/dsh-annotation-core-0.3.12-rc2.28.tgz
+        version: file:vendor/dsh-annotation-core-0.3.12-rc2.28.tgz
+      dsh-obsidian-bridge-protocol:
+        specifier: file:vendor/bridge-protocol-0.4.0-rc2.1.tgz
+        version: file:vendor/bridge-protocol-0.4.0-rc2.1.tgz
       jsdom:
         specifier: 26.1.0
         version: 26.1.0
@@ -40,7 +40,7 @@ importers:
         specifier: ^1.13.1
         version: 1.13.1(@codemirror/state@6.5.0)(@codemirror/view@6.38.6)
       tar:
-        specifier: ^7.5.1
+        specifier: 7.5.22
         version: 7.5.22
       tsdown:
         specifier: ^0.22.14
@@ -100,6 +100,10 @@ packages:
 
   '@jridgewell/sourcemap-codec@1.5.5':
     resolution: {integrity: sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og==}
+
+  '@linmu/dsh-session-contracts@file:vendor/session-contracts-0.1.0.tgz':
+    resolution: {integrity: sha512-boDSKQCU4v+lRADBFKgNznKzhNMDFRUgTv6Pfcdpyvc91jMFQgPMbpLb/dvTri1bjE4k/hQ77uIkEbe5AHaAUQ==, tarball: file:vendor/session-contracts-0.1.0.tgz}
+    version: 0.1.0
 
   '@marijn/find-cluster-break@1.0.4':
     resolution: {integrity: sha512-Wy0V7+SGUjnF9/TkiM1hKVDPj7jKXduPNboMVtHTA8dySMURWqfg/JZ9E2Sq8JgSJmkl7k7Qe9FLeMSrSraWmQ==}
@@ -457,9 +461,9 @@ packages:
     resolution: {integrity: sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ==}
     engines: {node: '>=8'}
 
-  dsh-annotation-core@file:../../../artifacts/system-fixes-20260914/dsh-annotation-core-0.3.12-rc2.7.tgz:
-    resolution: {integrity: sha512-nUg2+vHttilWn6f40ADnpEsD2Eun7wYzaqjW/UN4XpytejFQ7UvNSasVEmMpWX56TKwC81NdLg33CMArMN7WHg==, tarball: file:../../../artifacts/system-fixes-20260914/dsh-annotation-core-0.3.12-rc2.7.tgz}
-    version: 0.3.12-rc2.7
+  dsh-annotation-core@file:vendor/dsh-annotation-core-0.3.12-rc2.28.tgz:
+    resolution: {integrity: sha512-MI4FAXJc2jelvYB/hZl1XWil49BRFXFVm7hOscMnR6+TeTvBugVwb8pkZx6FOkUQOOgHdTApLRoClby2kiwJHg==, tarball: file:vendor/dsh-annotation-core-0.3.12-rc2.28.tgz}
+    version: 0.3.12-rc2.28
     engines: {node: '>=20'}
     peerDependencies:
       '@deepseek-ai/cordis': '*'
@@ -472,6 +476,8 @@ packages:
       '@deepseek-ai/dsh-session': 0.1.5-rc.2
       '@deepseek-ai/dsh-storage-domain': 0.1.5-rc.2
       '@deepseek-ai/dsh-system-prompt': 0.1.5-rc.2
+      '@deepseek-ai/dsh-timeout': 0.1.5-rc.2
+      '@deepseek-ai/dsh-token-meter': 0.1.5-rc.2
       '@deepseek-ai/dsh-tools': 0.1.5-rc.2
       '@deepseek-ai/dsh-typert-protocol': 0.1.5-rc.2
       '@deepseek-ai/schemastery': '*'
@@ -498,6 +504,10 @@ packages:
         optional: true
       '@deepseek-ai/dsh-system-prompt':
         optional: true
+      '@deepseek-ai/dsh-timeout':
+        optional: true
+      '@deepseek-ai/dsh-token-meter':
+        optional: true
       '@deepseek-ai/dsh-tools':
         optional: true
       '@deepseek-ai/dsh-typert-protocol':
@@ -509,9 +519,9 @@ packages:
       react-dom:
         optional: true
 
-  dsh-obsidian-bridge-protocol@file:C:/Users/19717/OneDrive/文档/ChatGPT/dsh/.artifacts/rc2-profile-candidate/dsh-obsidian-bridge-protocol-0.3.3-rc2.1.tgz:
-    resolution: {integrity: sha512-N4SlrVPUAGJyK1pK3RK1CbpSFSYH43jN2mYid3f3Wd1OerYWWA0t0R44HoQvs/z3iR9Ged4cREYnNzlEt3C2Bg==, tarball: file:C:/Users/19717/OneDrive/文档/ChatGPT/dsh/.artifacts/rc2-profile-candidate/dsh-obsidian-bridge-protocol-0.3.3-rc2.1.tgz}
-    version: 0.3.3-rc2.1
+  dsh-obsidian-bridge-protocol@file:vendor/bridge-protocol-0.4.0-rc2.1.tgz:
+    resolution: {integrity: sha512-/u19fp8bE70MHMJHLu+7ry/6pcUDwln/ubqMh1YZYPqQoYjwCtd2kQKGmcHAXyUPsvI0g059U67XQ84fRTTQog==, tarball: file:vendor/bridge-protocol-0.4.0-rc2.1.tgz}
+    version: 0.4.0-rc2.1
 
   dts-resolver@3.0.0:
     resolution: {integrity: sha512-1T1f+z+4tl9XD+m+0HBgWoL/nm0bOIffyWaUuUSBlFg/86IWvfx+wjNaO/ybU0AJzG9/Mi5hBUgGV6zCmWEN7Q==}
@@ -1026,6 +1036,9 @@ packages:
   yuku-parser@0.8.7:
     resolution: {integrity: sha512-vRD9nwt4L3aYpxNqeSC4WqLv58xrXef0Ong1Mc45CTXTIpvLafx7JO05sczmQZwdLEZvywrLOGdNC5+Rp5N1BQ==}
 
+  zod@4.1.5:
+    resolution: {integrity: sha512-rcUUZqlLJgBC33IT3PNMgsCq6TzLQEG/Ei/KTCU0PedSWRMAXoOUN+4t/0H+Q8bdnLPdqUYnvboJT0bn/229qg==}
+
   zod@4.4.3:
     resolution: {integrity: sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==}
 
@@ -1075,6 +1088,10 @@ snapshots:
       minipass: 7.1.3
 
   '@jridgewell/sourcemap-codec@1.5.5': {}
+
+  '@linmu/dsh-session-contracts@file:vendor/session-contracts-0.1.0.tgz':
+    dependencies:
+      zod: 4.1.5
 
   '@marijn/find-cluster-break@1.0.4': {}
 
@@ -1313,11 +1330,11 @@ snapshots:
 
   detect-libc@2.1.2: {}
 
-  dsh-annotation-core@file:../../../artifacts/system-fixes-20260914/dsh-annotation-core-0.3.12-rc2.7.tgz:
+  dsh-annotation-core@file:vendor/dsh-annotation-core-0.3.12-rc2.28.tgz:
     dependencies:
       zod: 4.4.3
 
-  dsh-obsidian-bridge-protocol@file:C:/Users/19717/OneDrive/文档/ChatGPT/dsh/.artifacts/rc2-profile-candidate/dsh-obsidian-bridge-protocol-0.3.3-rc2.1.tgz:
+  dsh-obsidian-bridge-protocol@file:vendor/bridge-protocol-0.4.0-rc2.1.tgz:
     dependencies:
       zod: 4.4.3
 
@@ -1752,5 +1769,7 @@ snapshots:
       '@yuku-parser/binding-linux-x64-musl': 0.8.7
       '@yuku-parser/binding-win32-arm64': 0.8.7
       '@yuku-parser/binding-win32-x64': 0.8.7
+
+  zod@4.1.5: {}
 
   zod@4.4.3: {}
