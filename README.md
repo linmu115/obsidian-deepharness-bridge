@@ -12,6 +12,8 @@
 
 ## 部署方法
 
+建议使用桌面版 **Obsidian 1.13.7 及以上**（当前本机基线）；插件清单的最低版本仍为 **1.13.0**。这条教程建议不提高插件本身的最低版本限制。
+
 **环境要求**：桌面版 Obsidian，以及已完成 DSH Obsidian Bridge 安装的目标 DSH 实例 `0.1.5-rc.2`。Companion 是 **Obsidian 侧插件**，不走 `dsh plugin` 命令。
 
 1. 从 [Release v0.7.0-rc2.7](https://github.com/linmu115/obsidian-deepharness-bridge/releases/tag/v0.7.0-rc2.7) 下载 `main.js`、`manifest.json`、`styles.css`，或直接下载 `obsidian-deepharness-bridge-0.7.0-rc2.7.zip`。
